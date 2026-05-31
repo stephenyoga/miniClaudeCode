@@ -107,7 +107,9 @@ public class Agent {
             recordTokenUsage(response);
 
             if (response.hasToolCalls()) {
-                cm.add(LLMModels.Message.assistantWithToolCall(response.getToolCalls()));
+                String rc = response.getFirstMessage() != null
+                        ? response.getFirstMessage().reasoningContent() : null;
+                cm.add(LLMModels.Message.assistantWithToolCall(response.getToolCalls(), rc));
 
                 for (LLMModels.ToolCall toolCall : response.getToolCalls()) {
                     Map<String, String> args = parseArguments(toolCall.function().arguments());
@@ -119,9 +121,10 @@ public class Agent {
             } else {
                 String content = response.getContent();
                 LLMModels.Message firstMessage = response.getFirstMessage();
-                String reasoningContent = firstMessage != null ? firstMessage.reasoningContent() : null;
-                cm.add(LLMModels.Message.assistant(content, reasoningContent));
+                // 不调工具时 reasoning_content 无需进历史，下轮 API 会忽略它，只浪费 Token
+                cm.add(LLMModels.Message.assistant(content));
 
+                String reasoningContent = firstMessage != null ? firstMessage.reasoningContent() : null;
                 StringBuilder result = new StringBuilder();
                 if (reasoningContent != null && !reasoningContent.isEmpty()) {
                     result.append("\n🧠 思考过程\n");
@@ -191,7 +194,9 @@ public class Agent {
             recordTokenUsage(response);
 
             if (response.hasToolCalls()) {
-                cm.add(LLMModels.Message.assistantWithToolCall(response.getToolCalls()));
+                String rc = response.getFirstMessage() != null
+                        ? response.getFirstMessage().reasoningContent() : null;
+                cm.add(LLMModels.Message.assistantWithToolCall(response.getToolCalls(), rc));
 
                 for (LLMModels.ToolCall toolCall : response.getToolCalls()) {
                     Map<String, String> args = parseArguments(toolCall.function().arguments());
@@ -202,9 +207,9 @@ public class Agent {
                 continue;
             } else {
                 System.out.println();
-                String reasoningContent = reasoningBuf.isEmpty() ? null : reasoningBuf.toString();
+                // 不调工具时 reasoning_content 不进上下文，省 Token
                 String content = contentBuf.toString();
-                cm.add(LLMModels.Message.assistant(content, reasoningContent));
+                cm.add(LLMModels.Message.assistant(content));
                 System.out.println(getTokenSummary());
                 return;
             }
