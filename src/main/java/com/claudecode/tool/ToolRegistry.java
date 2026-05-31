@@ -150,9 +150,9 @@ public class ToolRegistry {
                     try {
                         ProcessBuilder pb = new ProcessBuilder();
 
-                        // 根据操作系统设置命令
+                        // 根据操作系统设置命令，Windows 下自动切 UTF-8 代码页
                         if (System.getProperty("os.name").toLowerCase().contains("win")) {
-                            pb.command("cmd.exe", "/c", command);
+                            pb.command("cmd.exe", "/c", "chcp 65001 >nul && " + command);
                         } else {
                             pb.command("bash", "-c", command);
                         }
@@ -164,10 +164,11 @@ public class ToolRegistry {
                         pb.redirectErrorStream(true);
                         Process process = pb.start();
 
-                        // 读取命令输出
+                        String charset = "UTF-8";
+
                         StringBuilder output = new StringBuilder();
                         try (BufferedReader reader = new BufferedReader(
-                                new InputStreamReader(process.getInputStream()))) {
+                                new InputStreamReader(process.getInputStream(), charset))) {
                             String line;
                             while ((line = reader.readLine()) != null) {
                                 output.append(line).append("\n");

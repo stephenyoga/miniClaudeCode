@@ -268,6 +268,7 @@ public class DeepSeekClient extends LLMClient {
             long created = 0;
             StringBuilder reasoningBuf = new StringBuilder();
             StringBuilder contentBuf = new StringBuilder();
+            Map<Integer, LLMModels.ToolCall> toolCallsAccum = new java.util.LinkedHashMap<>();
             String finishReason = null;
             int promptTokens = 0, completionTokens = 0, totalTokens = 0;
             boolean reasoningStarted = false;
@@ -325,14 +326,42 @@ public class DeepSeekClient extends LLMClient {
                     contentBuf.append(ct);
                     callback.onContentChunk(ct);
                 }
+
+                // 累积 tool_calls（流式模式下逐块推送，需按 index 合并）
+                if (delta.has("tool_calls")) {
+                    JsonNode tcs = delta.get("tool_calls");
+                    if (tcs.isArray()) {
+                        for (JsonNode tc : tcs) {
+                            int idx = tc.get("index").asInt();
+                            LLMModels.ToolCall existing = toolCallsAccum.get(idx);
+                            if (existing != null) {
+                                String prevArgs = existing.function().arguments();
+                                String newArgs = prevArgs + tc.get("function").get("arguments").asText();
+                                toolCallsAccum.put(idx, new LLMModels.ToolCall(
+                                        existing.id(),
+                                        new LLMModels.FunctionCall(existing.function().name(), newArgs)));
+                            } else {
+                                String tcId = tc.has("id") ? tc.get("id").asText() : "";
+                                JsonNode func = tc.get("function");
+                                String funcName = func.has("name") ? func.get("name").asText() : "";
+                                String funcArgs = func.has("arguments") ? func.get("arguments").asText() : "";
+                                toolCallsAccum.put(idx, new LLMModels.ToolCall(
+                                        tcId, new LLMModels.FunctionCall(funcName, funcArgs)));
+                            }
+                        }
+                    }
+                }
             }
 
             // 构建完整响应
+            List<LLMModels.ToolCall> toolCallsList = toolCallsAccum.isEmpty()
+                    ? null : new ArrayList<>(toolCallsAccum.values());
+
             LLMModels.Message message = new LLMModels.Message(
                     "assistant",
                     contentBuf.isEmpty() ? null : contentBuf.toString(),
                     reasoningBuf.isEmpty() ? null : reasoningBuf.toString(),
-                    null, null);
+                    toolCallsList, null);
 
             LLMModels.ChatResponse.Choice choice = new LLMModels.ChatResponse.Choice(
                     message, finishReason, 0);
