@@ -4,6 +4,7 @@ package com.claudecode.cli;
 import com.claudecode.agent.Agent;
 import com.claudecode.agent.PlanAndExecuteAgent;
 import com.claudecode.config.EnvConfig;
+import com.claudecode.memory.MemoryManager;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -23,6 +24,7 @@ public class Main {
     /** 运行模式 */
     private enum Mode { REACT, PLAN_EXECUTE }
     private static Mode currentMode = Mode.REACT;
+    private static MemoryManager memoryManager;
 
     public static void main(String[] args) {
         // 强制 System.out/err 编码为 UTF-8，解决终端 Emoji 乱码
@@ -49,8 +51,9 @@ public class Main {
             System.exit(1);
         }
 
-        // 共享 DeepSeekClient 和 ConversationManager
+        // 共享 DeepSeekClient 和 MemoryManager
         com.claudecode.llm.DeepSeekClient sharedClient = new com.claudecode.llm.DeepSeekClient(apiKey);
+        memoryManager = new MemoryManager(sharedClient);
         String modelName = sharedClient.getModel();
         String osName = System.getProperty("os.name");
         String osHint = osLower.contains("win")
@@ -63,10 +66,9 @@ public class Main {
                 + "如果用户没有特殊要求，思考过程和回答都使用中文。\n"
                 + "只有在需要文件读取、写入、命令执行、项目创建等操作时才调用工具。\n"
                 + "请全程使用中文进行思考和回复用户。";
-        com.claudecode.agent.ConversationManager cm =
-                new com.claudecode.agent.ConversationManager(sysPrompt);
-        Agent agent = new Agent(sharedClient, cm);
-        PlanAndExecuteAgent planAgent = new PlanAndExecuteAgent(sharedClient, cm);
+        memoryManager.setSystemMessage(sysPrompt);
+        Agent agent = new Agent(sharedClient, memoryManager);
+        PlanAndExecuteAgent planAgent = new PlanAndExecuteAgent(sharedClient, memoryManager);
 
         // 交互式循环
         Scanner scanner = new Scanner(System.in);
@@ -176,6 +178,16 @@ public class Main {
             case "/info":
                 System.out.println(agent.getSystemInfo() + "\n");
                 break;
+            case "/memory":
+                System.out.println("📚 记忆状态\n");
+                System.out.println("  消息数: " + memoryManager.conversationSize());
+                System.out.println("  Token 使用率: " + String.format("%.1f%%", memoryManager.usageRate() * 100));
+                System.out.println(memoryManager.getUsageReport() + "\n");
+                break;
+            case "/save":
+                memoryManager.extractAndSaveFacts();
+                System.out.println("💾 事实已保存到长期记忆\n");
+                break;
             case "/thinking":
                 boolean thinkingStatus = agent.toggleThinking();
                 planAgent.toggleThinking();
@@ -282,6 +294,10 @@ public class Main {
   /effort        查看当前思考强度
   /effort high   设置思考强度为高
   /effort max    设置思考强度为最大
+
+记忆系统:
+  /memory        查看记忆状态
+  /save          保存关键事实到长期记忆
 
 统计信息:
   /tokens        查看 Token 使用统计

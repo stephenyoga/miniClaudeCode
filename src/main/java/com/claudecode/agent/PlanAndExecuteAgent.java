@@ -2,6 +2,7 @@ package com.claudecode.agent;
 
 import com.claudecode.llm.DeepSeekClient;
 import com.claudecode.llm.LLMModels;
+import com.claudecode.memory.MemoryManager;
 import com.claudecode.plan.*;
 import com.claudecode.tool.ToolRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -25,24 +26,24 @@ public class PlanAndExecuteAgent {
     private final ToolRegistry toolRegistry;
     private final ObjectMapper mapper;
 
-    /** 构造函数（共享 DeepSeekClient 实例） */
-    public PlanAndExecuteAgent(DeepSeekClient llmClient, ConversationManager cm) {
+    /** 构造函数（共享 DeepSeekClient 和 MemoryManager） */
+    public PlanAndExecuteAgent(DeepSeekClient llmClient, MemoryManager mm) {
         this.llmClient = llmClient;
+        this.mm = mm;
         this.planner = new Planner(llmClient);
         this.toolRegistry = new ToolRegistry();
         this.mapper = new ObjectMapper();
-        this.conversationManager = cm;
     }
 
     public PlanAndExecuteAgent(DeepSeekClient llmClient) {
-        this(llmClient, null);
+        this(llmClient, new MemoryManager(llmClient));
     }
 
     public PlanAndExecuteAgent(String apiKey) {
         this(new DeepSeekClient(apiKey));
     }
 
-    private final ConversationManager conversationManager;
+    private final MemoryManager mm;
 
     // ══════════════════════════════════════════════════
     //  Phase 1: Planning（委托给 Planner）
@@ -63,31 +64,40 @@ public class PlanAndExecuteAgent {
     }
 
     // ══════════════════════════════════════════════════
-    //  Phase 2: Execute（并行执行，依赖无冲突则同时跑）
+    //  Phase 2: Execute（并行执行 + 自我修正）
     // ══════════════════════════════════════════════════
 
-    public void execute(ExecutionPlan plan) {
+    public void execute(ExecutionPlan initialPlan) {
         System.out.println("⚡ 执行中...\n");
-        plan.markStarted();
+        initialPlan.markStarted();
 
+        ExecutionPlan plan = initialPlan;
         int total = plan.getExecutionOrder().size();
         System.out.println(buildTaskSummary(plan));
         System.out.println();
+
+        int successCount = 0, failCount = 0;
+        int showCount = 0; // 控制 replan 提示频率
 
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             while (!plan.allCompleted() && !plan.hasFailed()) {
                 List<Task> ready = plan.getNextExecutable();
                 if (ready.isEmpty()) break;
 
-                // 并行执行当前批次所有可执行任务
+                // 并行执行当前批次（lambda 用 final 副本 p）
+                ExecutionPlan p = plan;
                 List<CompletableFuture<Void>> futures = ready.stream()
-                        .map(task -> CompletableFuture.runAsync(() -> executeOneTask(task, plan), executor))
+                        .map(task -> CompletableFuture.runAsync(() -> executeOneTask(task, p), executor))
                         .toList();
-
-                // 等待本批全部完成
                 CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-                // 检查是否有失败，有则跳过其下游
+                // 统计本轮
+                for (Task task : ready) {
+                    if (task.getStatus() == TaskStatus.COMPLETED) successCount++;
+                    else if (task.getStatus() == TaskStatus.FAILED) failCount++;
+                }
+
+                // 失败级联跳过依赖链
                 for (Task task : ready) {
                     if (task.getStatus() == TaskStatus.FAILED) {
                         plan.skipDependentsOf(task.getId());
@@ -95,6 +105,32 @@ public class PlanAndExecuteAgent {
                 }
 
                 printProgress(countCompleted(plan), total);
+
+                // ── 自我修正：失败率过高且至少 2 次失败，触发重新规划 ──
+                int done = successCount + failCount;
+                double rate = done > 0 ? (double) failCount / done : 0;
+                boolean shouldReplan = failCount >= 2 && rate > 0.5 && showCount < 1;
+                if (shouldReplan) {
+                    showCount++;
+                    System.out.println();
+                    System.out.println("  ⚠️ 任务失败率 " + (int)(rate*100) + "%(" + failCount + "/" + done + ")，正在重新规划...");
+                    String reason = buildFailureReason(plan);
+                    try {
+                        ExecutionPlan newPlan = planner.replan(plan, reason);
+                        plan = newPlan;
+                        plan.markStarted();
+                        total = plan.getExecutionOrder().size();
+                        successCount = 0;
+                        failCount = 0;
+                        System.out.println("  ✅ 已生成新计划，继续执行...\n");
+                        System.out.println(buildTaskSummary(plan));
+                        System.out.println();
+                        printProgress(0, total);
+                    } catch (Exception e) {
+                        System.out.println("  ❌ 重新规划失败: " + e.getMessage());
+                        break;
+                    }
+                }
             }
         }
 
@@ -106,6 +142,19 @@ public class PlanAndExecuteAgent {
             plan.markCompleted();
             System.out.println("✅ 计划执行完成\n");
         }
+    }
+
+    /** 构建失败原因摘要（用于 replan 上下文） */
+    private String buildFailureReason(ExecutionPlan plan) {
+        StringBuilder sb = new StringBuilder("计划执行过程出现问题：\n");
+        for (Task t : plan.getTasks().values()) {
+            if (t.getStatus() == TaskStatus.FAILED) {
+                sb.append("- ❌ ").append(t.getId()).append(": ").append(t.getDescription()).append("\n");
+                sb.append("  错误: ").append(t.getError()).append("\n");
+            }
+        }
+        sb.append("请基于已完成的工作，重新规划剩余任务。");
+        return sb.toString();
     }
 
     /** 在独立线程中执行单个任务 */
@@ -329,9 +378,14 @@ public class PlanAndExecuteAgent {
      * 将 Plan 执行摘要写入共享上下文，让后续 ReAct 对话知道之前做了什么。
      */
     public void writeBackToContext(ExecutionPlan plan) {
-        if (conversationManager == null) return;
-        String summary = plan.getSummary() != null ? plan.getSummary() : plan.getGoal();
-        conversationManager.addPlanSummary(plan.getGoal(), summary);
+        String goal = plan.getGoal();
+        String summary = plan.getSummary() != null ? plan.getSummary() : goal;
+        mm.storeMessage(LLMModels.Message.user(
+                "【系统提示】刚才通过 Plan-and-Execute 模式完成了以下任务：" +
+                "\n目标: " + goal +
+                "\n执行摘要: " + summary +
+                "\n后续对话请基于以上已完成的操作为上下文。"));
+        mm.storeMessage(LLMModels.Message.assistant("已了解，之前的操作已完成。我会基于此继续协助。"));
     }
 
     public boolean isThinkingEnabled() { return llmClient.isThinkingEnabled(); }

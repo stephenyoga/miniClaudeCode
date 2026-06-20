@@ -3,6 +3,7 @@ package com.claudecode.agent;
 import com.claudecode.llm.DeepSeekClient;
 import com.claudecode.llm.LLMModels;
 import com.claudecode.llm.StreamCallback;
+import com.claudecode.memory.MemoryManager;
 import com.claudecode.tool.Tool;
 import com.claudecode.tool.ToolRegistry;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -15,13 +16,13 @@ import java.util.Map;
 
 /**
  * ReAct Agent —— 即时推理与执行。
- * 与 PlanAndExecuteAgent 共享 ConversationManager 维护对话上下文。
+ * 集成 MemoryManager：自动检索长期记忆注入 system prompt，工具结果存入短期记忆。
  */
 public class Agent {
 
     private final DeepSeekClient llmClient;
     private final ToolRegistry toolRegistry;
-    private final ConversationManager cm;
+    private final MemoryManager mm;
     private final ObjectMapper objectMapper;
 
     private static final int MAX_ITERATIONS = 10;
@@ -32,68 +33,39 @@ public class Agent {
     private int totalTokens = 0;
     private int apiCallCount = 0;
 
-    private String systemPrompt;
-
-    private String buildSystemPrompt(String modelName) {
-        return """
-        你是一个基于 DeepSeek API 的智能编程助手，可以帮助用户完成各种任务。
-
-        当前使用的模型：""" + modelName + """
-
-        【重要】当问题是关于事实、知识、概念解释、日常对话等不需要工具的问题时，请直接回答，不需要调用工具。
-        如果用户没有特殊要求，思考过程和回答都使用中文。
-
-        只有在需要以下操作时才调用工具：
-        1. read_file - 读取文件内容
-        2. write_file - 写入文件内容
-        3. list_dir - 列出目录内容
-        4. execute_command - 执行Shell命令
-        5. create_project - 创建新项目结构
-
-        使用工具后，根据工具返回的结果继续思考下一步行动。
-
-        请全程使用中文进行思考和回复用户。
-        """;
-    }
-
-    /** 构造函数（共享 DeepSeekClient 和 ConversationManager） */
-    public Agent(DeepSeekClient llmClient, ConversationManager cm) {
+    public Agent(DeepSeekClient llmClient, MemoryManager mm) {
         this.llmClient = llmClient;
-        this.cm = cm;
+        this.mm = mm;
         this.toolRegistry = new ToolRegistry();
         this.objectMapper = new ObjectMapper();
-        this.systemPrompt = buildSystemPrompt(llmClient.getModel());
     }
 
     public Agent(DeepSeekClient llmClient) {
-        this(llmClient, new ConversationManager(buildSystemPromptStatic(llmClient.getModel())));
+        this(llmClient, new MemoryManager(llmClient));
     }
 
     public Agent(String apiKey) {
         this(new DeepSeekClient(apiKey));
     }
 
-    private static String buildSystemPromptStatic(String modelName) {
-        return "你是一个基于 DeepSeek API 的智能编程助手。请用中文回复。\n当前模型：" + modelName;
-    }
-
     // ══════════════════════════════════════════════════
-    //  ReAct 循环（非流式，保留兼容）
+    //  ReAct（非流式）
     // ══════════════════════════════════════════════════
 
     public String run(String userInput) {
-        cm.addUser(userInput);
+        mm.addUserMessage(userInput);
+        injectMemoryToSystemPrompt(userInput);
+        mm.storeMessage(LLMModels.Message.user(userInput));
 
         int iteration = 0;
         while (iteration < MAX_ITERATIONS) {
             iteration++;
-
             int retryCount = 0;
             LLMModels.ChatResponse response = null;
 
             while (retryCount < MAX_RETRIES) {
                 try {
-                    response = llmClient.chat(cm.toList(), getToolDefinitions());
+                    response = llmClient.chat(mm.getConversationContext(), getToolDefinitions());
                     break;
                 } catch (IOException e) {
                     retryCount++;
@@ -105,30 +77,33 @@ public class Agent {
 
             if (response == null) return "LLM调用失败";
             recordTokenUsage(response);
+            mm.recordTokenUsage(
+                    response.usage() != null ? response.usage().promptTokens() : 0,
+                    response.usage() != null ? response.usage().completionTokens() : 0);
 
             if (response.hasToolCalls()) {
                 String rc = response.getFirstMessage() != null
                         ? response.getFirstMessage().reasoningContent() : null;
-                cm.add(LLMModels.Message.assistantWithToolCall(response.getToolCalls(), rc));
+                mm.storeMessage(LLMModels.Message.assistantWithToolCall(response.getToolCalls(), rc));
 
                 for (LLMModels.ToolCall toolCall : response.getToolCalls()) {
                     Map<String, String> args = parseArguments(toolCall.function().arguments());
                     String result = toolRegistry.executeTool(toolCall.function().name(), args);
                     printToolExecution(toolCall.function().name(), args, result);
-                    cm.add(LLMModels.Message.tool(result, toolCall.id()));
+                    mm.storeMessage(LLMModels.Message.tool(result, toolCall.id()));
+                    mm.addToolResult(toolCall.function().name(), args.toString(), result);
                 }
                 continue;
             } else {
                 String content = response.getContent();
                 LLMModels.Message firstMessage = response.getFirstMessage();
-                // 不调工具时 reasoning_content 无需进历史，下轮 API 会忽略它，只浪费 Token
-                cm.add(LLMModels.Message.assistant(content));
-
                 String reasoningContent = firstMessage != null ? firstMessage.reasoningContent() : null;
+                mm.storeMessage(LLMModels.Message.assistant(content));
+                mm.addAssistantMessage(LLMModels.Message.assistant(content));
+
                 StringBuilder result = new StringBuilder();
                 if (reasoningContent != null && !reasoningContent.isEmpty()) {
-                    result.append("\n🧠 思考过程\n");
-                    result.append("─────────────────────────\n");
+                    result.append("\n🧠 思考过程\n─────────────────────────\n");
                     String[] lines = reasoningContent.split("\n");
                     for (int i = 0; i < lines.length; i++) {
                         result.append(i == 0 ? "│  💭 " : "│    ").append(lines[i]).append("\n");
@@ -144,11 +119,13 @@ public class Agent {
     }
 
     // ══════════════════════════════════════════════════
-    //  ReAct 循环（流式）
+    //  ReAct（流式）
     // ══════════════════════════════════════════════════
 
     public void runStream(String userInput) {
-        cm.addUser(userInput);
+        mm.addUserMessage(userInput);
+        injectMemoryToSystemPrompt(userInput);
+        mm.storeMessage(LLMModels.Message.user(userInput));
 
         int iteration = 0;
         while (iteration < MAX_ITERATIONS) {
@@ -184,7 +161,7 @@ public class Agent {
 
             LLMModels.ChatResponse response;
             try {
-                response = llmClient.chatStream(cm.toList(), getToolDefinitions(), callback);
+                response = llmClient.chatStream(mm.getConversationContext(), getToolDefinitions(), callback);
             } catch (Exception e) {
                 System.err.println("请求失败: " + e.getMessage());
                 return;
@@ -192,27 +169,41 @@ public class Agent {
 
             if (response == null) continue;
             recordTokenUsage(response);
+            mm.recordTokenUsage(
+                    response.usage() != null ? response.usage().promptTokens() : 0,
+                    response.usage() != null ? response.usage().completionTokens() : 0);
 
             if (response.hasToolCalls()) {
                 String rc = response.getFirstMessage() != null
                         ? response.getFirstMessage().reasoningContent() : null;
-                cm.add(LLMModels.Message.assistantWithToolCall(response.getToolCalls(), rc));
+                mm.storeMessage(LLMModels.Message.assistantWithToolCall(response.getToolCalls(), rc));
 
                 for (LLMModels.ToolCall toolCall : response.getToolCalls()) {
                     Map<String, String> args = parseArguments(toolCall.function().arguments());
                     String result = toolRegistry.executeTool(toolCall.function().name(), args);
-                    cm.add(LLMModels.Message.tool(result, toolCall.id()));
+                    mm.storeMessage(LLMModels.Message.tool(result, toolCall.id()));
+                    mm.addToolResult(toolCall.function().name(), args.toString(), result);
                     printToolExecution(toolCall.function().name(), args, result);
                 }
                 continue;
             } else {
-                System.out.println();
-                // 不调工具时 reasoning_content 不进上下文，省 Token
                 String content = contentBuf.toString();
-                cm.add(LLMModels.Message.assistant(content));
+                mm.storeMessage(LLMModels.Message.assistant(content));
+                System.out.println();
                 System.out.println(getTokenSummary());
                 return;
             }
+        }
+    }
+
+    // ══════════════════════════════════════════════════
+    //  记忆集成
+    // ══════════════════════════════════════════════════
+
+    private void injectMemoryToSystemPrompt(String userInput) {
+        String memoryCtx = mm.buildContextForQuery(userInput, 500);
+        if (!memoryCtx.isEmpty()) {
+            mm.updateSystemPrompt(mm.getSystemPrompt() + memoryCtx);
         }
     }
 
@@ -263,18 +254,12 @@ public class Agent {
     }
 
     public void clearHistory() {
-        cm.clear();
+        mm.clearConversation();
     }
 
     public String getTokenStats() {
-        return String.format("""
-💰 Token 使用统计
-
-总调用次数: %d
-输入Token: %d
-输出Token: %d
-总计Token: %d
-""", apiCallCount, totalPromptTokens, totalCompletionTokens, totalTokens);
+        return mm.getUsageReport() + "\n" + String.format("输入Token: %d | 输出Token: %d",
+                totalPromptTokens, totalCompletionTokens);
     }
 
     public String getTokenSummary() {
@@ -297,11 +282,9 @@ public class Agent {
 
 模型配置:
 - 模型名称: DeepSeek (%s)
-- API端点: https://api.deepseek.com/v1/chat/completions
 - 思考模式: %s
 - 思考强度: %s
-- 最大迭代次数: 10
-- 最大重试次数: 3
+- 记忆使用: %d 条消息 | Token 使用率: %.1f%%
 
 可用工具:
 - read_file: 读取文件内容
@@ -314,11 +297,14 @@ public class Agent {
 - /help: 显示帮助信息
 - /clear: 清空对话历史
 - /tokens: 查看Token统计
+- /memory: 查看记忆状态
+- /save: 保存关键事实
 - /reset: 重置统计数据
 - /thinking: 切换思考模式
 - /effort: 设置思考强度
 - /exit: 退出程序
-""", modelName, thinkingEnabled ? "开启" : "关闭", reasoningEffort);
+""", modelName, thinkingEnabled ? "开启" : "关闭", reasoningEffort,
+                mm.conversationSize(), mm.usageRate() * 100);
     }
 
     public boolean isThinkingEnabled() { return llmClient.isThinkingEnabled(); }
@@ -328,6 +314,5 @@ public class Agent {
     }
     public void setReasoningEffort(String effort) { llmClient.setReasoningEffort(effort); }
     public String getReasoningEffort() { return llmClient.getReasoningEffort(); }
-    public String getSystemPrompt() { return systemPrompt; }
-    public ConversationManager getConversationManager() { return cm; }
+    public MemoryManager getMemoryManager() { return mm; }
 }
