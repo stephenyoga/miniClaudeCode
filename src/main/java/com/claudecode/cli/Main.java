@@ -213,9 +213,6 @@ public class Main {
     }
 
     /**
-     * 显示帮助信息
-     */
-    /**
      * 启发式判断：是否需要 Plan-and-Execute 模式。
      * 简单任务走 ReAct（快），复杂任务自动切换 Plan（稳）。
      */

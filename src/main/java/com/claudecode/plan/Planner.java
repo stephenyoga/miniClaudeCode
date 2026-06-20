@@ -190,7 +190,6 @@ public class Planner {
             String detailJson = cleanJson(detailResponse.getContent());
             JsonNode detailRoot = mapper.readTree(detailJson);
 
-            int phaseStart = globalIndex;
             List<String> currentPhaseTaskIds = new ArrayList<>();
 
             // 单个阶段内 ID 映射（仅用于本阶段内部依赖解析）
@@ -368,7 +367,4 @@ public class Planner {
         return "plan_" + System.currentTimeMillis();
     }
 
-    public DeepSeekClient getLlmClient() {
-        return llmClient;
-    }
 }

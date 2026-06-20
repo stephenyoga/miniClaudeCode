@@ -13,8 +13,6 @@ public class ExecutionPlan {
     private final List<String> executionOrder;
     private PlanStatus status;
     private String summary;
-    private long startTime;
-    private long endTime;
 
     public ExecutionPlan(String id, String goal) {
         this.id = id;
@@ -70,20 +68,11 @@ public class ExecutionPlan {
 
     // ── 计划生命周期 ──
 
-    public void markStarted() {
-        this.status = PlanStatus.RUNNING;
-        this.startTime = System.currentTimeMillis();
-    }
+    public void markStarted() { this.status = PlanStatus.RUNNING; }
 
-    public void markCompleted() {
-        this.status = PlanStatus.COMPLETED;
-        this.endTime = System.currentTimeMillis();
-    }
+    public void markCompleted() { this.status = PlanStatus.COMPLETED; }
 
-    public void markFailed() {
-        this.status = PlanStatus.FAILED;
-        this.endTime = System.currentTimeMillis();
-    }
+    public void markFailed() { this.status = PlanStatus.FAILED; }
 
     /** 是否有任务失败 */
     public boolean hasFailed() {
@@ -127,53 +116,8 @@ public class ExecutionPlan {
     public String getGoal() { return goal; }
     public Map<String, Task> getTasks() { return tasks; }
     public List<String> getExecutionOrder() { return executionOrder; }
-    /** 获取指定 ID 的任务 */
-    public Task getTask(String taskId) {
-        return tasks.get(taskId);
-    }
 
-    /** 生成计划可视化文本（执行中带实时状态图标） */
-    public String visualizeWithStatus() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("══════════════════════════════════════\n");
-        sb.append("📋 执行计划  [").append(statusIcon(status)).append(" ").append(status).append("]\n");
-        sb.append("目标: ").append(goal).append("\n");
-        sb.append("──────────────────────────────────────\n");
-        for (String taskId : executionOrder) {
-            Task t = tasks.get(taskId);
-            sb.append("  ").append(statusIcon(t.getStatus()));
-            sb.append(" ").append(taskId).append(" [").append(t.getType()).append("]");
-            sb.append("\n    ").append(t.getDescription());
-            if (t.getError() != null) {
-                sb.append("\n    ⚠️ ").append(t.getError());
-            }
-            sb.append("\n");
-        }
-        sb.append("══════════════════════════════════════");
-        return sb.toString();
-    }
-
-    private String statusIcon(PlanStatus s) {
-        return switch (s) {
-            case CREATED -> "📝";
-            case RUNNING -> "⚡";
-            case COMPLETED -> "✅";
-            case FAILED -> "❌";
-            case CANCELLED -> "🚫";
-        };
-    }
-
-    private String statusIcon(TaskStatus s) {
-        return switch (s) {
-            case PENDING -> "⏳";
-            case RUNNING -> "▶️";
-            case COMPLETED -> "✅";
-            case FAILED -> "❌";
-            case SKIPPED -> "⏭️";
-        };
-    }
-
-    /** 生成计划可视化文本（初始版本，执行前） */
+    /** 生成计划可视化文本 */
     public String visualize() {
         StringBuilder sb = new StringBuilder();
         sb.append("══════════════════════════════════════\n");

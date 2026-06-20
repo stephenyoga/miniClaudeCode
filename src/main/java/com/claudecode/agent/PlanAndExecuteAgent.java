@@ -110,19 +110,15 @@ public class PlanAndExecuteAgent {
 
     /** 在独立线程中执行单个任务 */
     private void executeOneTask(Task task, ExecutionPlan plan) {
-        String doneMsg;
         task.markStarted();
-
         try {
             String result = switch (task.getType()) {
                 case FILE_READ, FILE_WRITE, COMMAND -> executeToolTask(task, plan);
                 case ANALYSIS, VERIFICATION, PLANNING -> executeCognitiveTask(task, plan);
             };
             task.markCompleted(result);
-            doneMsg = "✅";
         } catch (Exception e) {
             task.markFailed(e.getMessage());
-            doneMsg = "❌  " + e.getMessage();
         }
 
         synchronized (System.out) {
@@ -178,9 +174,9 @@ public class PlanAndExecuteAgent {
                 注意：
                 - 路径必须使用绝对路径，参考上下文中已完成任务的结果
                 - FILE_WRITE 的 content 必须写完整代码，不能省略、不能用注释代替
-                - COMMAND 的 command 必须写完整可执行命令（如 "mkdir \"D:/path/to/dir\""、javac、java）
+                - COMMAND 的 command 必须写完整可执行命令（如 mkdir、javac、java）
                 - 如果上下文中没有路径信息，根据任务描述合理推断
-                - 当前操作系统是 Windows，mkdir 不要用 -p 参数，直接用 "mkdir \"路径\"" 或 "if not exist \"路径\" mkdir \"路径\""
+                - 当前操作系统是 Windows，mkdir 不要用 -p 参数，直接写完整 mkdir 命令
                 - 只输出 JSON，不要包含解释文字
                 """));
         messages.add(LLMModels.Message.user(context + "\n\n需要转化为工具参数的当前任务: " + task.getDescription()));
@@ -218,9 +214,8 @@ public class PlanAndExecuteAgent {
         StringBuilder taskResults = new StringBuilder();
         for (String taskId : plan.getExecutionOrder()) {
             Task t = plan.getTasks().get(taskId);
-            taskResults.append("[" + t.getId() + "] ")
-                    .append(t.getDescription())
-                    .append(" → ").append(t.getStatus());
+            taskResults.append("[").append(t.getId()).append("] ")
+                    .append(t.getDescription()).append(" → ").append(t.getStatus());
             if (t.getResult() != null) {
                 taskResults.append("\n   结果: ").append(truncate(t.getResult()));
             }
@@ -271,8 +266,8 @@ public class PlanAndExecuteAgent {
         ctx.append("已完成任务:\n");
         for (Task t : plan.getTasks().values()) {
             if (t.getStatus() == TaskStatus.COMPLETED) {
-                ctx.append("  [" + t.getId() + "] " + t.getDescription() + "\n");
-                ctx.append("  结果: " + truncate(t.getResult()) + "\n\n");
+                ctx.append("  [").append(t.getId()).append("] ").append(t.getDescription()).append("\n");
+                ctx.append("  结果: ").append(truncate(t.getResult())).append("\n\n");
             }
         }
         ctx.append("当前任务: ").append(task.getDescription());
