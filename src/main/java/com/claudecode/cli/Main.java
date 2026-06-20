@@ -199,6 +199,11 @@ public class Main {
                         ? "Plan-and-Execute（规划后执行）"
                         : "ReAct（即时推理）") + "\n");
                 break;
+            case "/hplan":
+                boolean newVal = !planAgent.isHierarchicalPlanning();
+                planAgent.setHierarchicalPlanning(newVal);
+                System.out.println("📚 分层规划: " + (newVal ? "开启" : "关闭") + "\n");
+                break;
             case "/help":
                 showHelp();
                 break;
@@ -273,6 +278,7 @@ public class Main {
 
 运行模式:
   /plan          切换 ReAct / Plan-and-Execute 模式
+  /hplan         切换分层规划（先定阶段 → 再细化任务）
 
 模型控制:
   /thinking      切换思考模式（开启/关闭）

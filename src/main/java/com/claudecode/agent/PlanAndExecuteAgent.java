@@ -9,6 +9,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Plan-and-Execute Agent —— 将复杂任务先规划为可执行计划，再按拓扑序逐项执行。
@@ -45,15 +48,22 @@ public class PlanAndExecuteAgent {
     //  Phase 1: Planning（委托给 Planner）
     // ══════════════════════════════════════════════════
 
+    /** 分层规划开关——复杂任务建议打开 */
+    private boolean hierarchicalPlanning = false;
+    public void setHierarchicalPlanning(boolean v) { this.hierarchicalPlanning = v; }
+    public boolean isHierarchicalPlanning() { return hierarchicalPlanning; }
+
     public ExecutionPlan plan(String userRequest) throws IOException {
         System.out.println("📋 规划阶段 —— 分析需求并生成执行计划...\n");
-        ExecutionPlan plan = planner.createPlan(userRequest);
+        ExecutionPlan plan = hierarchicalPlanning
+                ? planner.createPlanHierarchical(userRequest)
+                : planner.createPlan(userRequest);
         System.out.println(plan.visualize() + "\n");
         return plan;
     }
 
     // ══════════════════════════════════════════════════
-    //  Phase 2: Execute（滚动日志 + 进度条）
+    //  Phase 2: Execute（并行执行，依赖无冲突则同时跑）
     // ══════════════════════════════════════════════════
 
     public void execute(ExecutionPlan plan) {
@@ -64,30 +74,27 @@ public class PlanAndExecuteAgent {
         System.out.println(buildTaskSummary(plan));
         System.out.println();
 
-        while (!plan.allCompleted() && !plan.hasFailed()) {
-            List<Task> ready = plan.getNextExecutable();
-            if (ready.isEmpty()) break;
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            while (!plan.allCompleted() && !plan.hasFailed()) {
+                List<Task> ready = plan.getNextExecutable();
+                if (ready.isEmpty()) break;
 
-            for (Task task : ready) {
-                System.out.print("  ▶️  " + task.getId() + ": " + task.getDescription() + " ... ");
-                task.markStarted();
+                // 并行执行当前批次所有可执行任务
+                List<CompletableFuture<Void>> futures = ready.stream()
+                        .map(task -> CompletableFuture.runAsync(() -> executeOneTask(task, plan), executor))
+                        .toList();
 
-                try {
-                    String result = switch (task.getType()) {
-                        case FILE_READ, FILE_WRITE, COMMAND -> executeToolTask(task, plan);
-                        case ANALYSIS, VERIFICATION, PLANNING -> executeCognitiveTask(task, plan);
-                    };
-                    task.markCompleted(result);
-                    System.out.println("✅");
-                } catch (Exception e) {
-                    task.markFailed(e.getMessage());
-                    plan.skipDependentsOf(task.getId());
-                    System.out.println("❌");
-                    System.err.println("     错误: " + e.getMessage());
+                // 等待本批全部完成
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+                // 检查是否有失败，有则跳过其下游
+                for (Task task : ready) {
+                    if (task.getStatus() == TaskStatus.FAILED) {
+                        plan.skipDependentsOf(task.getId());
+                    }
                 }
 
-                int done = countCompleted(plan);
-                printProgress(done, total);
+                printProgress(countCompleted(plan), total);
             }
         }
 
@@ -99,6 +106,41 @@ public class PlanAndExecuteAgent {
             plan.markCompleted();
             System.out.println("✅ 计划执行完成\n");
         }
+    }
+
+    /** 在独立线程中执行单个任务 */
+    private void executeOneTask(Task task, ExecutionPlan plan) {
+        String doneMsg;
+        task.markStarted();
+
+        try {
+            String result = switch (task.getType()) {
+                case FILE_READ, FILE_WRITE, COMMAND -> executeToolTask(task, plan);
+                case ANALYSIS, VERIFICATION, PLANNING -> executeCognitiveTask(task, plan);
+            };
+            task.markCompleted(result);
+            doneMsg = "✅";
+        } catch (Exception e) {
+            task.markFailed(e.getMessage());
+            doneMsg = "❌  " + e.getMessage();
+        }
+
+        synchronized (System.out) {
+            System.out.println("  " + iconOfStatus(task.getStatus()) + "  " + task.getId() + ": " + task.getDescription());
+            if (task.getStatus() == TaskStatus.FAILED) {
+                System.out.println("     错误: " + task.getError());
+            }
+        }
+    }
+
+    private String iconOfStatus(TaskStatus s) {
+        return switch (s) {
+            case PENDING -> "⏳";
+            case RUNNING -> "▶️";
+            case COMPLETED -> "✅";
+            case FAILED -> "❌";
+            case SKIPPED -> "⏭️";
+        };
     }
 
     /**

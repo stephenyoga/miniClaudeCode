@@ -17,6 +17,72 @@ public class Planner {
     private final DeepSeekClient llmClient;
     private final ObjectMapper mapper;
 
+    // ══════════════════════════════════════════════════
+    //  分层规划提示
+    // ══════════════════════════════════════════════════
+
+    private static final String PHASE_PROMPT = """
+            你是一个资深的任务规划专家。请将用户的需求拆解为宏观执行阶段。
+
+            请全程使用中文进行思考和输出。
+
+            请严格按以下 JSON 格式输出（不要包含 markdown 代码块标记）：
+            {
+              "summary": "一句话概括任务目标（中文）",
+              "phases": [
+                {
+                  "id": "phase_1",
+                  "description": "阶段描述（中文），如"环境搭建"、"核心功能开发"、"测试验证""
+                }
+              ]
+            }
+
+            规则：
+            1. 将复杂任务拆分为 2-4 个宏观阶段
+            2. 每个阶段包含一个明确的子目标
+            3. 阶段按时间顺序排列，前序阶段完成后再进行后续阶段
+            4. 最后阶段必须是"验证"或"测试"相关
+            5. 只输出 JSON，不要包含任何解释文字
+            """;
+
+    private static final String PHASE_DETAIL_PROMPT = """
+            你是一个任务细化专家。请将指定的执行阶段拆解为具体的可执行子任务。
+
+            请全程使用中文进行思考和输出。
+
+            当前属于分层规划的第二层。你需要根据"阶段描述"和"已完成阶段"的信息，生成该阶段内的详细子任务。
+
+            请严格按以下 JSON 格式输出（不要包含 markdown 代码块标记）：
+            {
+              "tasks": [
+                {
+                  "id": "task_1",
+                  "description": "具体的任务描述（中文），包含文件路径、命令等关键信息",
+                  "type": "FILE_READ | FILE_WRITE | COMMAND | ANALYSIS | VERIFICATION"
+                }
+              ]
+            }
+
+            可用任务类型：
+            - FILE_READ: 读取文件内容
+            - FILE_WRITE: 写入文件内容
+            - COMMAND: 执行 Shell 命令（mkdir、javac、java 等）
+            - ANALYSIS: 分析已有结果、做出中间决策
+            - VERIFICATION: 验证结果是否正确
+
+            规则：
+            1. 只生成该阶段内部的任务
+            2. 任务 ID 按 task_1, task_2, ... 编号
+            3. 任务按该阶段内部执行顺序排列
+            4. 每个任务描述要具体明确
+            5. 类型不要使用 PLANNING
+            6. 只输出 JSON，不要包含任何解释文字
+            """;
+
+    // ══════════════════════════════════════════════════
+    //  单层规划提示（旧模式，保留兼容）
+    // ══════════════════════════════════════════════════
+
     private static final String PLANNING_PROMPT = """
             你是一个资深的任务规划专家。请将用户的需求拆解为可执行的子任务计划。
 
@@ -72,6 +138,116 @@ public class Planner {
 
         LLMModels.ChatResponse response = llmClient.chat(messages, null);
         return parsePlan(goal, response.getContent());
+    }
+
+    // ══════════════════════════════════════════════════
+    //  分层规划：先定阶段 → 再细化每个阶段
+    // ══════════════════════════════════════════════════
+
+    public ExecutionPlan createPlanHierarchical(String goal) throws IOException {
+        System.out.println("  📌 第一层：宏观规划 —— 确定执行阶段...");
+
+        // 第一层：获取宏观阶段
+        List<LLMModels.Message> phaseMessages = Arrays.asList(
+                LLMModels.Message.system(PHASE_PROMPT),
+                LLMModels.Message.user("请为以下任务制定执行阶段：\n" + goal)
+        );
+        LLMModels.ChatResponse phaseResponse = llmClient.chat(phaseMessages, null);
+        String phaseJson = cleanJson(phaseResponse.getContent());
+        JsonNode phaseRoot = mapper.readTree(phaseJson);
+        String summary = phaseRoot.has("summary") ? phaseRoot.get("summary").asText() : goal;
+
+        List<Phase> phases = new ArrayList<>();
+        for (JsonNode pn : phaseRoot.get("phases")) {
+            phases.add(new Phase(pn.get("id").asText(), pn.get("description").asText()));
+        }
+        System.out.println("  📌 阶段划分: " + phases.stream().map(Phase::description).toList());
+
+        // 第二层：逐阶段细化子任务
+        ExecutionPlan plan = new ExecutionPlan(generatePlanId(), goal);
+        plan.setSummary(summary);
+
+        int globalIndex = 1;
+        List<String> prevPhaseTaskIds = new ArrayList<>();
+
+        for (int pi = 0; pi < phases.size(); pi++) {
+            Phase phase = phases.get(pi);
+            System.out.println("  📌 第二层：细化阶段 [" + phase.description() + "]...");
+
+            StringBuilder detailPrompt = new StringBuilder();
+            detailPrompt.append("逐阶段细化——当前阶段：").append(phase.description()).append("\n\n");
+            detailPrompt.append("已完成阶段：\n");
+            for (int j = 0; j < pi; j++) {
+                detailPrompt.append("  ✅ ").append(phases.get(j).description()).append("\n");
+            }
+            detailPrompt.append("\n细化当前阶段的子任务。若该阶段内存在先后依赖，请标注。");
+
+            List<LLMModels.Message> detailMessages = Arrays.asList(
+                    LLMModels.Message.system(PHASE_DETAIL_PROMPT),
+                    LLMModels.Message.user(detailPrompt.toString())
+            );
+            LLMModels.ChatResponse detailResponse = llmClient.chat(detailMessages, null);
+            String detailJson = cleanJson(detailResponse.getContent());
+            JsonNode detailRoot = mapper.readTree(detailJson);
+
+            int phaseStart = globalIndex;
+            List<String> currentPhaseTaskIds = new ArrayList<>();
+
+            // 单个阶段内 ID 映射（仅用于本阶段内部依赖解析）
+            Map<String, String> phaseIdMap = new LinkedHashMap<>();
+
+            // 第一遍：创建任务
+            for (JsonNode tn : detailRoot.get("tasks")) {
+                String origId = tn.get("id").asText();
+                String newId = "task_" + globalIndex;
+                phaseIdMap.put(origId, newId);
+                currentPhaseTaskIds.add(newId);
+                globalIndex++;
+            }
+
+            // 第二遍：构建任务对象并设置依赖
+            for (int ti = 0; ti < detailRoot.get("tasks").size(); ti++) {
+                JsonNode tn = detailRoot.get("tasks").get(ti);
+                String newId = currentPhaseTaskIds.get(ti);
+                String desc = tn.get("description").asText();
+                TaskType type = TaskType.valueOf(tn.get("type").asText().toUpperCase());
+                Task task = new Task(newId, desc, type);
+
+                // 阶段门依赖：当前阶段第一个任务依赖上一阶段全部
+                if (ti == 0 && !prevPhaseTaskIds.isEmpty()) {
+                    prevPhaseTaskIds.forEach(task::addDependency);
+                }
+
+                // 本阶段内部依赖（LLM 输出的任务间依赖）
+                if (tn.has("dependencies")) {
+                    for (JsonNode dep : tn.get("dependencies")) {
+                        String mapped = phaseIdMap.get(dep.asText());
+                        if (mapped != null && currentPhaseTaskIds.contains(mapped)) {
+                            task.addDependency(mapped);
+                        }
+                    }
+                }
+
+                plan.addTask(task);
+            }
+
+            prevPhaseTaskIds = currentPhaseTaskIds;
+        }
+
+        // 建立双向依赖
+        for (Task task : plan.getTasks().values()) {
+            for (String depId : task.getDependencies()) {
+                Task dep = plan.getTasks().get(depId);
+                if (dep != null) dep.addDependent(task.getId());
+            }
+        }
+
+        // 拓扑排序
+        if (!plan.computeExecutionOrder()) {
+            throw new IllegalStateException("任务依赖关系存在环，无法执行！");
+        }
+
+        return plan;
     }
 
     // ══════════════════════════════════════════════════

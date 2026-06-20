@@ -43,7 +43,7 @@ public class ExecutionPlan {
             }
         }
 
-        Collections.reverse(executionOrder);
+        // DFS 后序已是正确执行顺序（依赖先入列），无需反转
         return true;
     }
 
