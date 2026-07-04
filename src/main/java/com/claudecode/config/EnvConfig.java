@@ -52,7 +52,7 @@ public class EnvConfig {
                     System.setProperty(key, value);
                 }
             }
-            System.out.println("✅ .env 文件加载成功");
+            System.out.println("✅ API Key 加载成功");
         } catch (IOException e) {
             System.err.println("警告: 读取 .env 文件失败: " + e.getMessage());
         }

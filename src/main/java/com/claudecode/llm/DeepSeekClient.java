@@ -66,9 +66,9 @@ public class DeepSeekClient extends LLMClient {
 
         // 输出模型配置信息（方便确认配置是否生效）
         if (envModel != null && !envModel.isEmpty()) {
-            System.out.println("📦 已加载模型配置: " + model + " (来自 .env 文件)");
+            System.out.println("📦 已加载模型: " + model);
         } else {
-            System.out.println("📦 使用默认模型配置: " + model);
+            System.out.println("📦 使用默认模型: " + model);
         }
     }
 

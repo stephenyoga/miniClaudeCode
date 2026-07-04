@@ -54,6 +54,7 @@ public class Main {
         // 共享 DeepSeekClient 和 MemoryManager
         com.claudecode.llm.DeepSeekClient sharedClient = new com.claudecode.llm.DeepSeekClient(apiKey);
         memoryManager = new MemoryManager(sharedClient);
+        System.out.println("📚 已加载 " + memoryManager.longTermSize() + " 条长期记忆");
         String modelName = sharedClient.getModel();
         String osName = System.getProperty("os.name");
         String osHint = osLower.contains("win")
@@ -73,7 +74,10 @@ public class Main {
         // 交互式循环
         Scanner scanner = new Scanner(System.in);
         System.out.println("💡 提示: 输入 '/help' 查看所有命令");
-        System.out.println("🧠 思考模式: 默认关闭 (输入 /thinking 开启深度思考)\n");
+        System.out.println("🧠 思考模式: 关闭 (输入 /thinking 开启)");
+        System.out.println("📍 运行模式: " + (currentMode == Mode.PLAN_EXECUTE
+                ? "Plan-and-Execute（规划后执行）" : "ReAct（即时推理）")
+                + " (输入 /plan 切换)\n");
 
         while (true) {
             String modeLabel = currentMode == Mode.PLAN_EXECUTE ? "[Plan]" : "";

@@ -164,6 +164,7 @@ public class MemoryManager {
                "  " + budget.getUsageReport();
     }
 
+    public int longTermSize() { return longTerm.size(); }
     public int conversationSize() { return conversation.size(); }
     public double usageRate() { return shortTerm.getUsageRatio(); }
     public String getUsageReport() { return budget.getUsageReport(); }
