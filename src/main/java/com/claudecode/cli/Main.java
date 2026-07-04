@@ -72,7 +72,8 @@ public class Main {
 
         // 交互式循环
         Scanner scanner = new Scanner(System.in);
-        System.out.println("💡 提示: 输入 '/help' 查看所有命令\n");
+        System.out.println("💡 提示: 输入 '/help' 查看所有命令");
+        System.out.println("🧠 思考模式: 默认关闭 (输入 /thinking 开启深度思考)\n");
 
         while (true) {
             String modeLabel = currentMode == Mode.PLAN_EXECUTE ? "[Plan]" : "";
@@ -104,7 +105,7 @@ public class Main {
                 if (agent.isThinkingEnabled()) {
                     System.out.println("🔄 正在思考...");
                 } else {
-                    System.out.println("⚡️ 快速响应");
+                    System.out.println("⚡️ 快速响应 (输入 /thinking 开启思考模式)");
                 }
                 System.out.println("🤖 Agent:");
                 agent.runStream(input);
@@ -179,10 +180,9 @@ public class Main {
                 System.out.println(agent.getSystemInfo() + "\n");
                 break;
             case "/memory":
-                System.out.println("📚 记忆状态\n");
-                System.out.println("  消息数: " + memoryManager.conversationSize());
-                System.out.println("  Token 使用率: " + String.format("%.1f%%", memoryManager.usageRate() * 100));
-                System.out.println(memoryManager.getUsageReport() + "\n");
+                System.out.println("📚 记忆系统状态\n");
+                System.out.println(memoryManager.getSystemStatus());
+                System.out.println();
                 break;
             case "/save":
                 memoryManager.extractAndSaveFacts();
@@ -220,6 +220,12 @@ public class Main {
                 showHelp();
                 break;
             default:
+                if (command.startsWith("/save ")) {
+                    String fact = command.substring(6).trim();
+                    memoryManager.storeFact(fact);
+                    System.out.println("💾 已保存到长期记忆: " + fact + "\n");
+                    break;
+                }
                 System.out.println("❓ 未知命令: " + command + "，输入 /help 查看所有命令\n");
         }
     }

@@ -32,6 +32,27 @@ public class ContextCompressor {
             [{"key": "用户偏好", "value": "喜欢用 Java 21"}, {"key": "项目路径", "value": "D:/demo"}]
             """;
 
+    // 临时性前缀：遇到这些开头直接丢弃（"我想/我要/帮我/新建/创建/删除..." 是一次性请求，不是事实）
+    private static final List<String> EPHEMERAL_PREFIXES = List.of(
+            "我想", "我要", "我需要", "帮我", "让我", "请帮我", "请你",
+            "新建", "创建", "删除", "修改", "生成", "写一个", "做一个",
+            "当前这轮", "本次任务", "接下来"
+    );
+
+    // 推测词：包含这些直接丢弃
+    private static final List<String> SPECULATION_CUES = List.of(
+            "可能", "应该", "猜测", "推测", "笔误", "提醒", "不确定"
+    );
+
+    // 耐久事实特征：必须包含以下至少一个关键词才算真事实
+    private static final List<String> DURABLE_HINTS = List.of(
+            "偏好", "习惯", "喜欢", "倾向",
+            "项目", "路径", "技术栈", "版本",
+            "模型", "接口", "配置", "环境变量", "默认",
+            "JDK", "Java", "Python", "Go", "Rust",
+            "用户", "学历", "身份", "学校", "专业"
+    );
+
     public ContextCompressor(DeepSeekClient llmClient) {
         this.llmClient = llmClient;
     }
@@ -64,15 +85,17 @@ public class ContextCompressor {
         return result;
     }
 
-    /** 提取关键事实存入长期记忆 */
+    /** 提取关键事实存入长期记忆（只从用户消息中提取，避免把 Agent 的建议当事实） */
     public void extractFacts(List<MemoryEntry> entries, LongTermMemory longTerm) {
         if (entries.isEmpty()) return;
 
         StringBuilder conversation = new StringBuilder();
         for (MemoryEntry e : entries) {
-            conversation.append(e.metadata().getOrDefault("role", "user"))
-                    .append(": ").append(truncate(e.content(), 200)).append("\n");
+            String role = e.metadata().getOrDefault("role", "user");
+            if (!"user".equals(role)) continue; // 只提取用户说的事实，过滤 assistant/tool
+            conversation.append("user: ").append(truncate(e.content(), 200)).append("\n");
         }
+        if (conversation.isEmpty()) return;
 
         try {
             List<LLMModels.Message> messages = Arrays.asList(
@@ -87,9 +110,34 @@ public class ContextCompressor {
             for (com.fasterxml.jackson.databind.JsonNode node : arr) {
                 String key = node.get("key").asText();
                 String value = node.get("value").asText();
+                if (!isPersistentFact(key, value)) continue;
                 longTerm.store(new MemoryEntry(value, MemoryType.FACT, Map.of("key", key)));
             }
         } catch (Exception ignored) {}
+    }
+
+    /** 过滤临时性请求和推测，只保留跨会话成立的耐久事实 */
+    private boolean isPersistentFact(String key, String value) {
+        if (key == null || value == null || value.length() <= 3) return false;
+        String lowerValue = value.toLowerCase(Locale.ROOT);
+        String lowerKey = key.toLowerCase(Locale.ROOT);
+
+        // 临时请求前缀
+        for (String prefix : EPHEMERAL_PREFIXES) {
+            if (lowerValue.startsWith(prefix.toLowerCase(Locale.ROOT))) return false;
+        }
+        // 推测词
+        for (String cue : SPECULATION_CUES) {
+            if (lowerValue.contains(cue.toLowerCase(Locale.ROOT))) return false;
+        }
+        // 耐久事实特征：key 或 value 中必须包含至少一个
+        for (String hint : DURABLE_HINTS) {
+            if (lowerKey.contains(hint.toLowerCase(Locale.ROOT))
+                    || lowerValue.contains(hint.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ── Map-Reduce ──

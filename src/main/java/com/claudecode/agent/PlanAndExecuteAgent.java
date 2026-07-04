@@ -8,16 +8,17 @@ import com.claudecode.tool.ToolRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 /**
  * Plan-and-Execute Agent —— 将复杂任务先规划为可执行计划，再按拓扑序逐项执行。
  *
- * 架构：Planner（规划）→ Executor（执行）→ Summarizer（总结）
+ * 架构：Planner（规划）→ Review（用户审查）→ Executor（mini ReAct 多轮工具调用）→ Summarizer（总结）
  */
 public class PlanAndExecuteAgent {
 
@@ -25,14 +26,39 @@ public class PlanAndExecuteAgent {
     private final Planner planner;
     private final ToolRegistry toolRegistry;
     private final ObjectMapper mapper;
+    private final MemoryManager mm;
 
-    /** 构造函数（共享 DeepSeekClient 和 MemoryManager） */
+    private static final int MAX_TASK_ITERATIONS = 5;
+
+    // ── 计划审查接口 ──
+
+    public interface PlanReviewHandler {
+        PlanReviewDecision review(String goal, ExecutionPlan plan);
+    }
+
+    public enum PlanReviewAction { EXECUTE, SUPPLEMENT, CANCEL }
+
+    public record PlanReviewDecision(PlanReviewAction action, String feedback) {
+        public static PlanReviewDecision execute() { return new PlanReviewDecision(PlanReviewAction.EXECUTE, null); }
+        public static PlanReviewDecision supplement(String feedback) { return new PlanReviewDecision(PlanReviewAction.SUPPLEMENT, feedback); }
+        public static PlanReviewDecision cancel() { return new PlanReviewDecision(PlanReviewAction.CANCEL, null); }
+    }
+
+    private record TaskRunResult(String result, boolean streamedOutput) {}
+
+    private record TaskExecutionResult(Task task, String result, Exception error) {
+        boolean failed() { return error != null; }
+    }
+
+    private PlanReviewHandler reviewHandler;
+
     public PlanAndExecuteAgent(DeepSeekClient llmClient, MemoryManager mm) {
         this.llmClient = llmClient;
         this.mm = mm;
         this.planner = new Planner(llmClient);
         this.toolRegistry = new ToolRegistry();
         this.mapper = new ObjectMapper();
+        this.reviewHandler = new ConsoleReviewHandler();
     }
 
     public PlanAndExecuteAgent(DeepSeekClient llmClient) {
@@ -43,13 +69,12 @@ public class PlanAndExecuteAgent {
         this(new DeepSeekClient(apiKey));
     }
 
-    private final MemoryManager mm;
+    public void setReviewHandler(PlanReviewHandler handler) { this.reviewHandler = handler; }
 
     // ══════════════════════════════════════════════════
     //  Phase 1: Planning（委托给 Planner）
     // ══════════════════════════════════════════════════
 
-    /** 分层规划开关——复杂任务建议打开 */
     private boolean hierarchicalPlanning = false;
     public void setHierarchicalPlanning(boolean v) { this.hierarchicalPlanning = v; }
     public boolean isHierarchicalPlanning() { return hierarchicalPlanning; }
@@ -68,33 +93,94 @@ public class PlanAndExecuteAgent {
     // ══════════════════════════════════════════════════
 
     public void execute(ExecutionPlan initialPlan) {
-        System.out.println("⚡ 执行中...\n");
-        initialPlan.markStarted();
-
         ExecutionPlan plan = initialPlan;
+
+        // 用户审查循环
+        while (true) {
+            PlanReviewDecision decision = reviewHandler.review(plan.getGoal(), plan);
+            if (decision.action() == PlanReviewAction.EXECUTE) break;
+            if (decision.action() == PlanReviewAction.CANCEL) {
+                System.out.println("⏹️ 已取消本次计划执行\n");
+                plan.markFailed();
+                return;
+            }
+            String feedback = decision.feedback() != null ? decision.feedback().trim() : "";
+            if (feedback.isEmpty()) break;
+            System.out.println("📝 已收到补充要求，正在重新规划...\n");
+            try {
+                plan = planner.replan(plan, feedback);
+                System.out.println(plan.visualize() + "\n");
+            } catch (Exception e) {
+                System.out.println("❌ 重新规划失败: " + e.getMessage());
+                return;
+            }
+        }
+
+        System.out.println("🚀 开始执行计划...\n");
+        plan.markStarted();
+
         int total = plan.getExecutionOrder().size();
-        System.out.println(buildTaskSummary(plan));
-        System.out.println();
-
         int successCount = 0, failCount = 0;
-        int showCount = 0; // 控制 replan 提示频率
+        int replanCount = 0;
 
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+        try (ExecutorService executor = Executors.newFixedThreadPool(
+                Math.min(Runtime.getRuntime().availableProcessors(), 4), r -> {
+                    Thread t = new Thread(r, "plan-executor");
+                    t.setDaemon(true);
+                    return t;
+                })) {
+
             while (!plan.allCompleted() && !plan.hasFailed()) {
                 List<Task> ready = plan.getNextExecutable();
                 if (ready.isEmpty()) break;
 
-                // 并行执行当前批次（lambda 用 final 副本 p）
-                ExecutionPlan p = plan;
-                List<CompletableFuture<Void>> futures = ready.stream()
-                        .map(task -> CompletableFuture.runAsync(() -> executeOneTask(task, p), executor))
-                        .toList();
-                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-                // 统计本轮
+                // 并行执行当前批次，输出缓冲防交错
+                Map<String, ByteArrayOutputStream> buffers = new LinkedHashMap<>();
+                List<Future<TaskExecutionResult>> futures = new ArrayList<>();
+                ExecutionPlan currentPlan = plan;
                 for (Task task : ready) {
-                    if (task.getStatus() == TaskStatus.COMPLETED) successCount++;
-                    else if (task.getStatus() == TaskStatus.FAILED) failCount++;
+                    System.out.println("▶️ 执行任务 [" + task.getId() + "]: " + task.getDescription());
+                    task.markStarted();
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    buffers.put(task.getId(), baos);
+                    PrintStream taskOut = new PrintStream(baos, true, StandardCharsets.UTF_8);
+                    futures.add(executor.submit(() -> {
+                        try {
+                            TaskRunResult result = executeTask(currentPlan, task, taskOut);
+                            return new TaskExecutionResult(task, result.result(), null);
+                        } catch (Exception e) {
+                            return new TaskExecutionResult(task, null, e);
+                        }
+                    }));
+                }
+
+                // 收集结果，按顺序 flush 缓冲区
+                for (int i = 0; i < ready.size(); i++) {
+                    try {
+                        TaskExecutionResult result = futures.get(i).get();
+                        ByteArrayOutputStream buf = buffers.get(result.task().getId());
+                        if (buf != null && buf.size() > 0) {
+                            System.out.print(buf.toString(StandardCharsets.UTF_8));
+                        }
+                        if (!result.failed()) {
+                            result.task().markCompleted(result.result());
+                            successCount++;
+                            System.out.println("✅ 完成 [" + result.task().getId() + "]\n");
+                        } else {
+                            result.task().markFailed(result.error().getMessage());
+                            failCount++;
+                            System.out.println("❌ 失败 [" + result.task().getId() + "]: "
+                                    + result.error().getMessage() + "\n");
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } catch (ExecutionException e) {
+                        Task task = ready.get(i);
+                        task.markFailed(e.getCause().getMessage());
+                        failCount++;
+                        System.out.println("❌ 失败 [" + task.getId() + "]: "
+                                + e.getCause().getMessage() + "\n");
+                    }
                 }
 
                 // 失败级联跳过依赖链
@@ -106,25 +192,22 @@ public class PlanAndExecuteAgent {
 
                 printProgress(countCompleted(plan), total);
 
-                // ── 自我修正：失败率过高且至少 2 次失败，触发重新规划 ──
+                // ── 自我修正 ──
                 int done = successCount + failCount;
                 double rate = done > 0 ? (double) failCount / done : 0;
-                boolean shouldReplan = failCount >= 2 && rate > 0.5 && showCount < 1;
-                if (shouldReplan) {
-                    showCount++;
+                if (failCount >= 2 && rate > 0.5 && replanCount < 1) {
+                    replanCount++;
                     System.out.println();
                     System.out.println("  ⚠️ 任务失败率 " + (int)(rate*100) + "%(" + failCount + "/" + done + ")，正在重新规划...");
-                    String reason = buildFailureReason(plan);
                     try {
-                        ExecutionPlan newPlan = planner.replan(plan, reason);
+                        ExecutionPlan newPlan = planner.replan(plan, buildFailureReason(plan));
                         plan = newPlan;
                         plan.markStarted();
                         total = plan.getExecutionOrder().size();
                         successCount = 0;
                         failCount = 0;
                         System.out.println("  ✅ 已生成新计划，继续执行...\n");
-                        System.out.println(buildTaskSummary(plan));
-                        System.out.println();
+                        System.out.println(buildTaskSummary(plan) + "\n");
                         printProgress(0, total);
                     } catch (Exception e) {
                         System.out.println("  ❌ 重新规划失败: " + e.getMessage());
@@ -144,7 +227,94 @@ public class PlanAndExecuteAgent {
         }
     }
 
-    /** 构建失败原因摘要（用于 replan 上下文） */
+    /**
+     * 执行单个任务 —— mini ReAct 循环（对齐 Paicli）。
+     * 每个 task 内可多轮工具调用，LLM 自主控制何时结束。
+     */
+    private TaskRunResult executeTask(ExecutionPlan plan, Task task, PrintStream out) throws IOException {
+        String sysPrompt = buildTaskSystemPrompt(task);
+        String taskInput = buildTaskContext(plan.getGoal(), plan, task);
+
+        // 注入长期记忆
+        String memoryCtx = mm.buildContextForQuery(task.getDescription(), 500);
+        if (!memoryCtx.isEmpty()) {
+            taskInput = taskInput + "\n\n" + memoryCtx;
+        }
+
+        List<LLMModels.Message> messages = new ArrayList<>();
+        messages.add(LLMModels.Message.system(sysPrompt));
+        messages.add(LLMModels.Message.user(taskInput));
+
+        StringBuilder allResults = new StringBuilder();
+        int iteration = 0;
+
+        while (iteration < MAX_TASK_ITERATIONS) {
+            iteration++;
+
+            LLMModels.ChatResponse response = llmClient.chat(messages, toolDefinitions());
+            mm.recordTokenUsage(
+                    response.usage() != null ? response.usage().promptTokens() : 0,
+                    response.usage() != null ? response.usage().completionTokens() : 0);
+
+            if (!response.hasToolCalls()) {
+                String content = response.getContent();
+                if (!allResults.isEmpty() && (content == null || content.isBlank())) {
+                    return new TaskRunResult(allResults.toString().trim(), false);
+                }
+                return new TaskRunResult(content, false);
+            }
+
+            // 有工具调用：执行并回灌
+            printToolCalls(out, response.getToolCalls());
+            messages.add(LLMModels.Message.assistantWithToolCall(response.getToolCalls()));
+
+            for (LLMModels.ToolCall tc : response.getToolCalls()) {
+                Map<String, String> args = parseArguments(tc.function().arguments());
+                String result = toolRegistry.executeTool(tc.function().name(), args);
+                out.println("  工具结果: " + truncate(result, 200) + "\n");
+                messages.add(LLMModels.Message.tool(result, tc.id()));
+                allResults.append(result).append("\n");
+            }
+        }
+
+        String fallback = allResults.toString().trim();
+        return new TaskRunResult(fallback, false);
+    }
+
+    private void printToolCalls(PrintStream out, List<LLMModels.ToolCall> toolCalls) {
+        for (LLMModels.ToolCall tc : toolCalls) {
+            out.println("  🔧 " + tc.function().name()
+                    + "(" + truncate(tc.function().arguments(), 80) + ")");
+        }
+    }
+
+    /** 构建任务执行的 system prompt */
+    private String buildTaskSystemPrompt(Task task) {
+        return switch (task.getType()) {
+            case FILE_READ, FILE_WRITE, COMMAND -> """
+                    你是任务执行专家。根据上下文和当前任务，决定需要调用哪些工具。
+                    全程使用中文。如果任务只需分析/总结，直接输出结果，不要调用工具。
+                    如果需要操作文件或执行命令，调用对应工具后基于结果输出完成说明。
+                    """;
+            case ANALYSIS, VERIFICATION, PLANNING -> """
+                    你是任务执行专家。根据上下文和当前任务，直接给出分析结论。
+                    全程使用中文。不要调用工具，直接输出结果即可。
+                    """;
+        };
+    }
+
+    private List<LLMModels.Tool> toolDefinitions() {
+        List<LLMModels.Tool> tools = new ArrayList<>();
+        for (com.claudecode.tool.Tool t : toolRegistry.getAllTools()) {
+            tools.add(new LLMModels.Tool(t.name(), t.description(), t.parameters()));
+        }
+        return tools;
+    }
+
+    // ══════════════════════════════════════════════════
+    //  失败原因 & 任务上下文
+    // ══════════════════════════════════════════════════
+
     private String buildFailureReason(ExecutionPlan plan) {
         StringBuilder sb = new StringBuilder("计划执行过程出现问题：\n");
         for (Task t : plan.getTasks().values()) {
@@ -157,100 +327,29 @@ public class PlanAndExecuteAgent {
         return sb.toString();
     }
 
-    /** 在独立线程中执行单个任务 */
-    private void executeOneTask(Task task, ExecutionPlan plan) {
-        task.markStarted();
-        try {
-            String result = switch (task.getType()) {
-                case FILE_READ, FILE_WRITE, COMMAND -> executeToolTask(task, plan);
-                case ANALYSIS, VERIFICATION, PLANNING -> executeCognitiveTask(task, plan);
-            };
-            task.markCompleted(result);
-        } catch (Exception e) {
-            task.markFailed(e.getMessage());
-        }
+    private String buildTaskContext(String goal, ExecutionPlan plan, Task task) {
+        StringBuilder ctx = new StringBuilder();
+        ctx.append("总目标：").append(goal).append("\n");
+        ctx.append("当前任务：").append(task.getDescription()).append("\n");
 
-        synchronized (System.out) {
-            System.out.println("  " + iconOfStatus(task.getStatus()) + "  " + task.getId() + ": " + task.getDescription());
-            if (task.getStatus() == TaskStatus.FAILED) {
-                System.out.println("     错误: " + task.getError());
+        if (task.getDependencies().isEmpty()) {
+            ctx.append("依赖任务：无\n");
+        } else {
+            ctx.append("依赖任务结果：\n");
+            for (String depId : task.getDependencies()) {
+                Task dep = plan.getTasks().get(depId);
+                if (dep == null) continue;
+                ctx.append("- ").append(dep.getId())
+                        .append(" / ").append(dep.getDescription())
+                        .append(" / 状态=").append(dep.getStatus()).append("\n");
+                if (dep.getResult() != null && !dep.getResult().isBlank()) {
+                    ctx.append("  ").append(truncate(dep.getResult(), 300)).append("\n");
+                }
             }
         }
-    }
 
-    private String iconOfStatus(TaskStatus s) {
-        return switch (s) {
-            case PENDING -> "⏳";
-            case RUNNING -> "▶️";
-            case COMPLETED -> "✅";
-            case FAILED -> "❌";
-            case SKIPPED -> "⏭️";
-        };
-    }
-
-    /**
-     * 执行工具类任务：先用 LLM 把 task.description（自然语言）翻译为具体的工具参数，
-     * 再调用对应的工具执行。
-     */
-    private String executeToolTask(Task task, ExecutionPlan plan) throws IOException {
-        String toolName = switch (task.getType()) {
-            case FILE_READ -> "read_file";
-            case FILE_WRITE -> "write_file";
-            case COMMAND -> "execute_command";
-            default -> throw new IllegalStateException("不支持的工具类型: " + task.getType());
-        };
-
-        String paramFields = switch (task.getType()) {
-            case FILE_READ -> "\"path\": \"文件的绝对路径\"";
-            case FILE_WRITE -> "\"path\": \"文件的绝对路径\", \"content\": \"完整的文件内容\"";
-            case COMMAND -> "\"command\": \"准确完整的可执行命令\"";
-            default -> "";
-        };
-
-        String context = buildContext(task, plan);
-
-        List<LLMModels.Message> messages = new ArrayList<>();
-        messages.add(LLMModels.Message.system("""
-                你是工具参数翻译专家。根据执行上下文和当前任务描述，生成调用工具所需的精确参数。
-
-                请全程使用中文进行思考和输出。
-
-                严格输出以下 JSON 格式（不要包含其他任何内容）：
-                {
-                  """ + paramFields + """
-                }
-
-                注意：
-                - 路径必须使用绝对路径，参考上下文中已完成任务的结果
-                - FILE_WRITE 的 content 必须写完整代码，不能省略、不能用注释代替
-                - COMMAND 的 command 必须写完整可执行命令（如 mkdir、javac、java）
-                - 如果上下文中没有路径信息，根据任务描述合理推断
-                - 当前操作系统是 Windows，mkdir 不要用 -p 参数，直接写完整 mkdir 命令
-                - 只输出 JSON，不要包含解释文字
-                """));
-        messages.add(LLMModels.Message.user(context + "\n\n需要转化为工具参数的当前任务: " + task.getDescription()));
-
-        LLMModels.ChatResponse response = llmClient.chat(messages, List.of());
-        String jsonStr = extractJson(response.getContent());
-        Map<String, String> params = parseJsonToMap(jsonStr);
-
-        return toolRegistry.executeTool(toolName, params);
-    }
-
-    /** 认知类任务：调用 LLM 进行分析/验证 */
-    private String executeCognitiveTask(Task task, ExecutionPlan plan) throws IOException {
-        String context = buildContext(task, plan);
-
-        List<LLMModels.Message> messages = new ArrayList<>();
-        messages.add(LLMModels.Message.system("""
-                你是任务执行专家。根据已完成任务的结果，完成当前任务。
-                请全程使用中文进行思考和输出。
-                请直接给出分析结论或验证结果，不要调用工具，不要废话。
-                """));
-        messages.add(LLMModels.Message.user(context));
-
-        LLMModels.ChatResponse response = llmClient.chat(messages, List.of());
-        return response.getContent();
+        ctx.append("\n请执行此任务。");
+        return ctx.toString();
     }
 
     // ══════════════════════════════════════════════════
@@ -266,10 +365,10 @@ public class PlanAndExecuteAgent {
             taskResults.append("[").append(t.getId()).append("] ")
                     .append(t.getDescription()).append(" → ").append(t.getStatus());
             if (t.getResult() != null) {
-                taskResults.append("\n   结果: ").append(truncate(t.getResult()));
+                taskResults.append("\n   结果: ").append(truncate(t.getResult(), 300));
             }
             if (t.getError() != null) {
-                taskResults.append("\n   错误: ").append(t.getError());
+                taskResults.append("\n   错误: ").append(truncate(t.getError(), 200));
             }
             taskResults.append("\n\n");
         }
@@ -277,8 +376,7 @@ public class PlanAndExecuteAgent {
         List<LLMModels.Message> messages = new ArrayList<>();
         messages.add(LLMModels.Message.system("""
                 你是结果汇总专家。根据任务执行结果，生成简洁的中文总结报告。
-                请全程使用中文进行思考和输出。
-                包含：完成了什么、关键结果、是否有问题。
+                全程使用中文。包含：完成了什么、关键结果、是否有问题。
                 """));
         messages.add(LLMModels.Message.user("目标: " + plan.getGoal() + "\n\n" + taskResults));
 
@@ -306,22 +404,29 @@ public class PlanAndExecuteAgent {
     }
 
     // ══════════════════════════════════════════════════
-    //  Helpers
+    //  PlanReviewHandler 默认实现 —— 控制台审查
     // ══════════════════════════════════════════════════
 
-    private String buildContext(Task task, ExecutionPlan plan) {
-        StringBuilder ctx = new StringBuilder();
-        ctx.append("执行目标: ").append(plan.getGoal()).append("\n\n");
-        ctx.append("已完成任务:\n");
-        for (Task t : plan.getTasks().values()) {
-            if (t.getStatus() == TaskStatus.COMPLETED) {
-                ctx.append("  [").append(t.getId()).append("] ").append(t.getDescription()).append("\n");
-                ctx.append("  结果: ").append(truncate(t.getResult())).append("\n\n");
+    private static class ConsoleReviewHandler implements PlanReviewHandler {
+        private final Scanner scanner = new Scanner(System.in);
+
+        @Override
+        public PlanReviewDecision review(String goal, ExecutionPlan plan) {
+            System.out.print("是否执行此计划？[y=执行 / n=取消 / 输入补充要求]: ");
+            String input = scanner.nextLine().trim();
+            if (input.isEmpty() || input.equalsIgnoreCase("y")) {
+                return PlanReviewDecision.execute();
             }
+            if (input.equalsIgnoreCase("n")) {
+                return PlanReviewDecision.cancel();
+            }
+            return PlanReviewDecision.supplement(input);
         }
-        ctx.append("当前任务: ").append(task.getDescription());
-        return ctx.toString();
     }
+
+    // ══════════════════════════════════════════════════
+    //  Helpers
+    // ══════════════════════════════════════════════════
 
     private String buildTaskSummary(ExecutionPlan plan) {
         StringBuilder sb = new StringBuilder();
@@ -338,7 +443,7 @@ public class PlanAndExecuteAgent {
         int filled = (int) ((done * (long) barWidth) / total);
         String bar = "▓".repeat(filled) + "░".repeat(barWidth - filled);
         int pct = (done * 100) / total;
-        System.out.print("\r  [" + bar + "] " + pct + "% (" + done + "/" + total + ")     \n");
+        System.out.print("  [" + bar + "] " + pct + "% (" + done + "/" + total + ")     \n");
     }
 
     private int countCompleted(ExecutionPlan plan) {
@@ -348,35 +453,26 @@ public class PlanAndExecuteAgent {
                 .count();
     }
 
-    private String extractJson(String content) {
-        if (content == null) return "{}";
-        int start = content.indexOf('{');
-        int end = content.lastIndexOf('}');
-        if (start >= 0 && end > start) {
-            return content.substring(start, end + 1);
+    private Map<String, String> parseArguments(String argumentsJson) {
+        if (argumentsJson == null || argumentsJson.isBlank()) return Map.of();
+        try {
+            return mapper.readValue(argumentsJson,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {});
+        } catch (Exception e) {
+            return Map.of("arguments", argumentsJson);
         }
-        return "{}";
     }
 
-    private Map<String, String> parseJsonToMap(String jsonStr) throws IOException {
-        JsonNode root = mapper.readTree(jsonStr);
-        Map<String, String> params = new LinkedHashMap<>();
-        root.fields().forEachRemaining(e -> params.put(e.getKey(), e.getValue().asText()));
-        return params;
-    }
-
-    private String truncate(String s) {
+    private String truncate(String s, int n) {
         if (s == null) return "(null)";
-        return s.length() > 200 ? s.substring(0, 200) + "..." : s;
+        return s.length() > n ? s.substring(0, n) + "..." : s;
     }
 
     // ══════════════════════════════════════════════════
     //  Delegate methods
     // ══════════════════════════════════════════════════
 
-    /**
-     * 将 Plan 执行摘要写入共享上下文，让后续 ReAct 对话知道之前做了什么。
-     */
+    /** 将 Plan 执行摘要写入共享上下文，让后续 ReAct 对话知道之前做了什么 */
     public void writeBackToContext(ExecutionPlan plan) {
         String goal = plan.getGoal();
         String summary = plan.getSummary() != null ? plan.getSummary() : goal;

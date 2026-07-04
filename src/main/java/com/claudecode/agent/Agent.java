@@ -65,6 +65,7 @@ public class Agent {
 
             while (retryCount < MAX_RETRIES) {
                 try {
+                    mm.compactConversationHistory();
                     response = llmClient.chat(mm.getConversationContext(), getToolDefinitions());
                     break;
                 } catch (IOException e) {
@@ -161,6 +162,7 @@ public class Agent {
 
             LLMModels.ChatResponse response;
             try {
+                mm.compactConversationHistory();
                 response = llmClient.chatStream(mm.getConversationContext(), getToolDefinitions(), callback);
             } catch (Exception e) {
                 System.err.println("请求失败: " + e.getMessage());

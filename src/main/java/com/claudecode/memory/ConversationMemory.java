@@ -65,4 +65,9 @@ public class ConversationMemory implements Memory {
     public int maxTokens() { return maxTokens; }
     public List<MemoryEntry> getCompressedSummaries() { return List.copyOf(compressedSummaries); }
     public int entryCount() { return entries.size(); }
+
+    public String getStatusSummary() {
+        return String.format("短期记忆: %d条 / %d tokens (预算: %d, 使用率: %.0f%%, 已压缩: %d条)",
+                entryCount(), tokenCount(), maxTokens(), getUsageRatio() * 100, compressedSummaries.size());
+    }
 }

@@ -21,6 +21,7 @@ public class MemoryManager {
     private final ConversationMemory shortTerm = new ConversationMemory();
     private final LongTermMemory longTerm = new LongTermMemory();
     private final ContextCompressor compressor;
+    private final ConversationHistoryCompactor historyCompactor;
     private final MemoryRetriever retriever = new MemoryRetriever(shortTerm, longTerm);
     private final TokenBudget budget;
 
@@ -28,6 +29,7 @@ public class MemoryManager {
 
     public MemoryManager(DeepSeekClient llmClient) {
         this.compressor = new ContextCompressor(llmClient);
+        this.historyCompactor = new ConversationHistoryCompactor(llmClient);
         this.budget = new TokenBudget(llmClient.getModel());
     }
 
@@ -69,9 +71,27 @@ public class MemoryManager {
         return ctx;
     }
 
-    /** 提取事实到长期记忆 */
+    /** 提取事实到长期记忆（自动，对话结束时调用） */
     public void extractAndSaveFacts() {
         compressor.extractFacts(shortTerm.getAll(), longTerm);
+    }
+
+    /** 手动存储一条事实到长期记忆（/save 命令直接存，不走 LLM） */
+    public void storeFact(String fact) {
+        MemoryEntry entry = new MemoryEntry(fact, MemoryType.FACT,
+                Map.of("source", "manual", "key", inferKey(fact)));
+        longTerm.store(entry);
+    }
+
+    /** 根据事实内容推断一个简短的 key */
+    private String inferKey(String fact) {
+        String lower = fact.toLowerCase();
+        if (lower.contains("jdk") || lower.contains("java")) return "JDK 版本偏好";
+        if (lower.contains("python")) return "Python 偏好";
+        if (lower.contains("路径") || lower.contains("项目")) return "项目路径";
+        if (lower.contains("学校") || lower.contains("大学") || lower.contains("学历")) return "用户身份";
+        if (lower.contains("默认") || lower.contains("偏好")) return "用户偏好";
+        return "用户偏好";
     }
 
     // ══════════════════════════════════════════════════
@@ -100,6 +120,16 @@ public class MemoryManager {
     /** 获取原始 system prompt（不含注入的记忆） */
     public String getSystemPrompt() { return systemPrompt; }
 
+    /** 压缩对话历史（原地压缩内部 conversation 列表，用于 LLM 调用前削减 token） */
+    public synchronized boolean compactConversationHistory() {
+        return historyCompactor.compactIfNeeded(conversation, budget.getAvailableForConversation());
+    }
+
+    /** 获取对话历史可用 Token 预算 */
+    public int getAvailableConversationTokens() {
+        return budget.getAvailableForConversation();
+    }
+
     /** 获取完整对话上下文 */
     public synchronized List<LLMModels.Message> getConversationContext() {
         return new ArrayList<>(conversation);
@@ -125,6 +155,13 @@ public class MemoryManager {
 
     public List<MemoryEntry> retrieve(String query) {
         return retriever.retrieve(query, 10);
+    }
+
+    /** 获取记忆系统的整体状态 */
+    public String getSystemStatus() {
+        return "  " + shortTerm.getStatusSummary() + "\n" +
+               "  " + longTerm.getStatusSummary() + "\n" +
+               "  " + budget.getUsageReport();
     }
 
     public int conversationSize() { return conversation.size(); }

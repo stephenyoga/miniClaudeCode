@@ -41,7 +41,18 @@ public class LongTermMemory implements Memory {
 
     @Override
     public void store(MemoryEntry entry) {
-        // 自动去重：内容完全相同跳过
+        // 相同 key 覆盖：如果 metadata 中有 key 且已有同 key 条目，删除旧条目
+        String key = entry.metadata().get("key");
+        if (key != null && !key.isEmpty()) {
+            entries.values().removeIf(e -> {
+                if (key.equals(e.metadata().get("key"))) {
+                    tokenCounter.addAndGet(-e.tokenCount());
+                    return true;
+                }
+                return false;
+            });
+        }
+        // 内容完全相同跳过
         boolean exists = entries.values().stream()
                 .anyMatch(e -> e.content().equals(entry.content()));
         if (exists) return;
@@ -83,6 +94,18 @@ public class LongTermMemory implements Memory {
         return 0; // 长期记忆不设预算上限
     }
 
+    public int size() { return entries.size(); }
+    public int tokenCount() { return tokenCounter.get(); }
+
+    public String getStatusSummary() {
+        Map<MemoryType, Long> typeCounts = entries.values().stream()
+                .collect(Collectors.groupingBy(MemoryEntry::type, Collectors.counting()));
+        return String.format("长期记忆: %d条 / %d tokens (事实: %d, 摘要: %d)",
+                size(), tokenCount(),
+                typeCounts.getOrDefault(MemoryType.FACT, 0L),
+                typeCounts.getOrDefault(MemoryType.SUMMARY, 0L));
+    }
+
     /** 按内容精确匹配查找 */
     public Optional<MemoryEntry> findByContent(String content) {
         return entries.values().stream()
@@ -97,11 +120,27 @@ public class LongTermMemory implements Memory {
         if (!storageFile.exists()) return;
         try {
             List<Map<String, Object>> raw = mapper.readValue(storageFile, List.class);
+            // 后入覆盖：同 key 保留最新时间戳，清理历史积攒的脏数据
+            Map<String, MemoryEntry> dedup = new LinkedHashMap<>();
             for (Map<String, Object> map : raw) {
                 MemoryEntry e = deserialize(map);
-                entries.put(e.id(), e);
-                tokenCounter.addAndGet(e.tokenCount());
+                String key = e.metadata().get("key");
+                if (key != null && !key.isEmpty()) {
+                    MemoryEntry existing = dedup.values().stream()
+                            .filter(v -> key.equals(v.metadata().get("key")))
+                            .findFirst().orElse(null);
+                    if (existing != null) {
+                        if (e.timestamp().isAfter(existing.timestamp())) {
+                            dedup.remove(existing.id());
+                            dedup.put(e.id(), e);
+                        }
+                        continue;
+                    }
+                }
+                dedup.put(e.id(), e);
             }
+            entries.putAll(dedup);
+            dedup.values().forEach(e -> tokenCounter.addAndGet(e.tokenCount()));
         } catch (Exception ignored) {}
     }
 
