@@ -228,7 +228,7 @@ public class PlanAndExecuteAgent {
     }
 
     /**
-     * 执行单个任务 —— mini ReAct 循环（对齐 Paicli）。
+     * 执行单个任务 —— mini ReAct 循环，LLM 自主多轮工具调用后结束。
      * 每个 task 内可多轮工具调用，LLM 自主控制何时结束。
      */
     private TaskRunResult executeTask(ExecutionPlan plan, Task task, PrintStream out) throws IOException {

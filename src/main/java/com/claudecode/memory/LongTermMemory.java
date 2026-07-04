@@ -13,7 +13,7 @@ import java.util.stream.Collectors;
 
 /**
  * 长期记忆 —— 跨会话持久化到磁盘，自动去重。
- * 存储路径优先级：环境变量 PAICLI_MEMORY_DIR > JVM 参数 -Dpaicli.memory.dir > 默认路径
+ * 存储路径优先级：环境变量 MEMORY_DIR > JVM 参数 -Dmemory.dir > 默认路径
  */
 public class LongTermMemory implements Memory {
 
@@ -32,9 +32,9 @@ public class LongTermMemory implements Memory {
     }
 
     private String resolveStorageDir() {
-        String env = System.getenv("PAICLI_MEMORY_DIR");
+        String env = System.getenv("MEMORY_DIR");
         if (env != null && !env.isEmpty()) return env;
-        String jvm = System.getProperty("paicli.memory.dir");
+        String jvm = System.getProperty("memory.dir");
         if (jvm != null && !jvm.isEmpty()) return jvm;
         return DEFAULT_DIR;
     }
