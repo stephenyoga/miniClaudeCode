@@ -123,12 +123,7 @@ public class PlanAndExecuteAgent {
         int successCount = 0, failCount = 0;
         int replanCount = 0;
 
-        try (ExecutorService executor = Executors.newFixedThreadPool(
-                Math.min(Runtime.getRuntime().availableProcessors(), 4), r -> {
-                    Thread t = new Thread(r, "plan-executor");
-                    t.setDaemon(true);
-                    return t;
-                })) {
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
 
             while (!plan.allCompleted() && !plan.hasFailed()) {
                 List<Task> ready = plan.getNextExecutable();
@@ -136,50 +131,42 @@ public class PlanAndExecuteAgent {
 
                 // 并行执行当前批次，输出缓冲防交错
                 Map<String, ByteArrayOutputStream> buffers = new LinkedHashMap<>();
-                List<Future<TaskExecutionResult>> futures = new ArrayList<>();
                 ExecutionPlan currentPlan = plan;
+                List<CompletableFuture<TaskExecutionResult>> futures = new ArrayList<>();
                 for (Task task : ready) {
                     System.out.println("▶️ 执行任务 [" + task.getId() + "]: " + task.getDescription());
                     task.markStarted();
                     ByteArrayOutputStream baos = new ByteArrayOutputStream();
                     buffers.put(task.getId(), baos);
                     PrintStream taskOut = new PrintStream(baos, true, StandardCharsets.UTF_8);
-                    futures.add(executor.submit(() -> {
+                    futures.add(CompletableFuture.supplyAsync(() -> {
                         try {
-                            TaskRunResult result = executeTask(currentPlan, task, taskOut);
-                            return new TaskExecutionResult(task, result.result(), null);
+                            TaskRunResult r = executeTask(currentPlan, task, taskOut);
+                            return new TaskExecutionResult(task, r.result(), null);
                         } catch (Exception e) {
                             return new TaskExecutionResult(task, null, e);
                         }
-                    }));
+                    }, executor));
                 }
 
-                // 收集结果，按顺序 flush 缓冲区
+                // 等待所有任务完成，再按顺序 flush 缓冲区
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
                 for (int i = 0; i < ready.size(); i++) {
-                    try {
-                        TaskExecutionResult result = futures.get(i).get();
-                        ByteArrayOutputStream buf = buffers.get(result.task().getId());
-                        if (buf != null && buf.size() > 0) {
-                            System.out.print(buf.toString(StandardCharsets.UTF_8));
-                        }
-                        if (!result.failed()) {
-                            result.task().markCompleted(result.result());
-                            successCount++;
-                            System.out.println("✅ 完成 [" + result.task().getId() + "]\n");
-                        } else {
-                            result.task().markFailed(result.error().getMessage());
-                            failCount++;
-                            System.out.println("❌ 失败 [" + result.task().getId() + "]: "
-                                    + result.error().getMessage() + "\n");
-                        }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    } catch (ExecutionException e) {
-                        Task task = ready.get(i);
-                        task.markFailed(e.getCause().getMessage());
+                    TaskExecutionResult result = futures.get(i).join();
+                    ByteArrayOutputStream buf = buffers.get(result.task().getId());
+                    if (buf != null && buf.size() > 0) {
+                        System.out.print(buf.toString(StandardCharsets.UTF_8));
+                    }
+                    if (!result.failed()) {
+                        result.task().markCompleted(result.result());
+                        successCount++;
+                        System.out.println("✅ 完成 [" + result.task().getId() + "]\n");
+                    } else {
+                        result.task().markFailed(result.error().getMessage());
                         failCount++;
-                        System.out.println("❌ 失败 [" + task.getId() + "]: "
-                                + e.getCause().getMessage() + "\n");
+                        System.out.println("❌ 失败 [" + result.task().getId() + "]: "
+                                + result.error().getMessage() + "\n");
                     }
                 }
 
