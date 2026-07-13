@@ -4,7 +4,10 @@ package com.claudecode.cli;
 import com.claudecode.agent.Agent;
 import com.claudecode.agent.PlanAndExecuteAgent;
 import com.claudecode.config.EnvConfig;
+import com.claudecode.agent.AgentOrchestrator;
 import com.claudecode.memory.MemoryManager;
+import com.claudecode.rag.CodeIndex;
+import com.claudecode.rag.CodeRetriever;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -22,9 +25,10 @@ public class Main {
     private static final String ENV_FILE = ".env";
 
     /** 运行模式 */
-    private enum Mode { REACT, PLAN_EXECUTE }
+    private enum Mode { REACT, PLAN_EXECUTE, TEAM }
     private static Mode currentMode = Mode.REACT;
     private static MemoryManager memoryManager;
+    private static AgentOrchestrator orchestrator;
 
     public static void main(String[] args) {
         // 强制 System.out/err 编码为 UTF-8，解决终端 Emoji 乱码
@@ -70,17 +74,21 @@ public class Main {
         memoryManager.setSystemMessage(sysPrompt);
         Agent agent = new Agent(sharedClient, memoryManager);
         PlanAndExecuteAgent planAgent = new PlanAndExecuteAgent(sharedClient, memoryManager);
+        orchestrator = new AgentOrchestrator(sharedClient);
 
         // 交互式循环
         Scanner scanner = new Scanner(System.in);
         System.out.println("💡 提示: 输入 '/help' 查看所有命令");
         System.out.println("🧠 思考模式: 关闭 (输入 /thinking 开启)");
-        System.out.println("📍 运行模式: " + (currentMode == Mode.PLAN_EXECUTE
-                ? "Plan-and-Execute（规划后执行）" : "ReAct（即时推理）")
-                + " (输入 /plan 切换)\n");
+        System.out.println("📍 运行模式: " + modeLabel(currentMode)
+                + " (输入 /plan 切换至 P&E，/team 切换至多 Agent)\n");
 
         while (true) {
-            String modeLabel = currentMode == Mode.PLAN_EXECUTE ? "[Plan]" : "";
+            String modeLabel = switch (currentMode) {
+                case PLAN_EXECUTE -> "[Plan] ";
+                case TEAM -> "[Team] ";
+                default -> "";
+            };
             String input;
             do {
                 System.out.print(modeLabel + "👤 你: ");
@@ -95,6 +103,12 @@ public class Main {
 
             // 退出命令（兼容旧格式）
             if (input.equalsIgnoreCase("exit") || input.equalsIgnoreCase("quit")) break;
+
+            // Team 模式
+            if (currentMode == Mode.TEAM) {
+                handleTeamMode(input);
+                continue;
+            }
 
             // 智能模式选择：简单任务走 ReAct，复杂任务自动切 Plan-and-Execute
             boolean usePlan = currentMode == Mode.PLAN_EXECUTE
@@ -211,9 +225,11 @@ public class Main {
                 break;
             case "/plan":
                 currentMode = currentMode == Mode.PLAN_EXECUTE ? Mode.REACT : Mode.PLAN_EXECUTE;
-                System.out.println("📋 模式切换: " + (currentMode == Mode.PLAN_EXECUTE
-                        ? "Plan-and-Execute（规划后执行）"
-                        : "ReAct（即时推理）") + "\n");
+                System.out.println("📋 模式切换: " + modeLabel(currentMode) + "\n");
+                break;
+            case "/team":
+                currentMode = currentMode == Mode.TEAM ? Mode.REACT : Mode.TEAM;
+                System.out.println("👥 模式切换: " + modeLabel(currentMode) + "\n");
                 break;
             case "/hplan":
                 boolean newVal = !planAgent.isHierarchicalPlanning();
@@ -228,6 +244,36 @@ public class Main {
                     String fact = command.substring(6).trim();
                     memoryManager.storeFact(fact);
                     System.out.println("💾 已保存到长期记忆: " + fact + "\n");
+                    break;
+                }
+                if (command.startsWith("/index ")) {
+                    String path = command.substring(7).trim();
+                    System.out.println("🔍 开始索引代码库: " + path + "\n");
+                    String result = new CodeIndex().index(path);
+                    System.out.println(result + "\n");
+                    break;
+                }
+                if (command.startsWith("/search ")) {
+                    String query = command.substring(8).trim();
+                    System.out.println("🔎 搜索结果: " + query + "\n");
+                    try {
+                        var results = new CodeRetriever(System.getProperty("user.dir")).hybridSearch(query, 5);
+                        if (results.isEmpty()) {
+                            System.out.println("  无匹配结果\n");
+                        } else {
+                            for (var r : results) {
+                                System.out.println("  [" + r.chunkType() + "] " + r.name());
+                                System.out.println("  📄 " + r.filePath());
+                                System.out.println("  📊 相似度: " + String.format("%.2f", r.similarity()));
+                                String preview = r.content().length() > 200
+                                        ? r.content().substring(0, 200) + "..."
+                                        : r.content();
+                                System.out.println("  " + preview.replace("\n", "\n  ") + "\n");
+                            }
+                        }
+                    } catch (Exception e) {
+                        System.out.println("  ❌ 检索失败: " + e.getMessage() + "\n");
+                    }
                     break;
                 }
                 System.out.println("❓ 未知命令: " + command + "，输入 /help 查看所有命令\n");
@@ -274,6 +320,24 @@ public class Main {
         }
     }
 
+    private static String modeLabel(Mode mode) {
+        return switch (mode) {
+            case REACT -> "ReAct（即时推理）";
+            case PLAN_EXECUTE -> "Plan-and-Execute（规划后执行）";
+            case TEAM -> "Team（多 Agent 协作）";
+        };
+    }
+
+    /** 多 Agent 协作模式：Planner → Workers → Reviewer */
+    private static void handleTeamMode(String input) {
+        try {
+            String result = orchestrator.run(input);
+            System.out.println("\n" + result + "\n");
+        } catch (Exception e) {
+            System.out.println("❌ 多 Agent 执行失败: " + e.getMessage() + "\n");
+        }
+    }
+
     private static boolean shouldPlan(String input) {
         if (input.length() > 50) return true;
 
@@ -297,6 +361,7 @@ public class Main {
 
 运行模式:
   /plan          切换 ReAct / Plan-and-Execute 模式
+  /team          切换 Team（多 Agent 协作）模式
   /hplan         切换分层规划（先定阶段 → 再细化任务）
 
 模型控制:
