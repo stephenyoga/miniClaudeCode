@@ -152,7 +152,7 @@ public class ToolRegistry {
 
                         // 根据操作系统设置命令，Windows 下自动切 UTF-8 代码页
                         if (System.getProperty("os.name").toLowerCase().contains("win")) {
-                            pb.command("cmd.exe", "/c", "chcp 65001 >nul && " + command);
+                            pb.command("cmd.exe", "/c", "chcp 65001 >nul & " + command);
                         } else {
                             pb.command("bash", "-c", command);
                         }

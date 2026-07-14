@@ -1,5 +1,6 @@
 package com.claudecode.agent;
 
+import com.claudecode.config.PromptAssembler;
 import com.claudecode.llm.DeepSeekClient;
 import com.claudecode.llm.LLMModels;
 import com.claudecode.memory.MemoryManager;
@@ -278,15 +279,8 @@ public class PlanAndExecuteAgent {
     /** 构建任务执行的 system prompt */
     private String buildTaskSystemPrompt(Task task) {
         return switch (task.getType()) {
-            case FILE_READ, FILE_WRITE, COMMAND -> """
-                    你是任务执行专家。根据上下文和当前任务，决定需要调用哪些工具。
-                    全程使用中文。如果任务只需分析/总结，直接输出结果，不要调用工具。
-                    如果需要操作文件或执行命令，调用对应工具后基于结果输出完成说明。
-                    """;
-            case ANALYSIS, VERIFICATION, PLANNING -> """
-                    你是任务执行专家。根据上下文和当前任务，直接给出分析结论。
-                    全程使用中文。不要调用工具，直接输出结果即可。
-                    """;
+            case FILE_READ, FILE_WRITE, COMMAND -> PromptAssembler.load("modes/plan-executor.md");
+            case ANALYSIS, VERIFICATION, PLANNING -> PromptAssembler.load("modes/plan-cognitive.md");
         };
     }
 
@@ -361,10 +355,7 @@ public class PlanAndExecuteAgent {
         }
 
         List<LLMModels.Message> messages = new ArrayList<>();
-        messages.add(LLMModels.Message.system("""
-                你是结果汇总专家。根据任务执行结果，生成简洁的中文总结报告。
-                全程使用中文。包含：完成了什么、关键结果、是否有问题。
-                """));
+        messages.add(LLMModels.Message.system(PromptAssembler.load("modes/plan-summarizer.md")));
         messages.add(LLMModels.Message.user("目标: " + plan.getGoal() + "\n\n" + taskResults));
 
         LLMModels.ChatResponse response = llmClient.chat(messages, List.of());

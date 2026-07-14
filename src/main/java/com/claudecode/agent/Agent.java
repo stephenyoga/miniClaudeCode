@@ -189,7 +189,13 @@ public class Agent {
                 continue;
             } else {
                 String content = contentBuf.toString();
-                mm.storeMessage(LLMModels.Message.assistant(content));
+                // 流式模式下 content 可能为空（只有 reasoning_content），用 reasoning 兜底
+                if (content.isEmpty()) {
+                    content = reasoningBuf.toString();
+                }
+                if (!content.isEmpty()) {
+                    mm.storeMessage(LLMModels.Message.assistant(content));
+                }
                 System.out.println();
                 System.out.println(getTokenSummary());
                 return;

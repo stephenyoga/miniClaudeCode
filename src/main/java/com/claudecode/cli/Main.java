@@ -4,12 +4,14 @@ package com.claudecode.cli;
 import com.claudecode.agent.Agent;
 import com.claudecode.agent.PlanAndExecuteAgent;
 import com.claudecode.config.EnvConfig;
+import com.claudecode.config.PromptAssembler;
 import com.claudecode.agent.AgentOrchestrator;
 import com.claudecode.memory.MemoryManager;
 import com.claudecode.rag.CodeIndex;
 import com.claudecode.rag.CodeRetriever;
 
 import java.io.File;
+import java.util.Map;
 import java.io.FileNotFoundException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -64,13 +66,8 @@ public class Main {
         String osHint = osLower.contains("win")
                 ? "Windows。Shell命令必须使用cmd格式(dir/del/rmdir/mkdir/type, 不要用ls/rm/cat。路径分隔符用\\)。"
                 : "Linux/macOS。Shell命令使用bash格式。";
-        String sysPrompt = "你是一个基于 DeepSeek API 的智能编程助手，可以帮助用户完成各种任务。\n"
-                + "当前使用的模型：" + modelName + "\n"
-                + "当前运行的操作系统：" + osName + " (" + osHint + ")\n"
-                + "当问题是关于事实、知识、概念解释、日常对话等不需要工具的问题时，请直接回答。\n"
-                + "如果用户没有特殊要求，思考过程和回答都使用中文。\n"
-                + "只有在需要文件读取、写入、命令执行、项目创建等操作时才调用工具。\n"
-                + "请全程使用中文进行思考和回复用户。";
+        String sysPrompt = PromptAssembler.load("modes/agent.md", Map.of(
+                "model", modelName, "os", osName, "os_hint", osHint));
         memoryManager.setSystemMessage(sysPrompt);
         Agent agent = new Agent(sharedClient, memoryManager);
         PlanAndExecuteAgent planAgent = new PlanAndExecuteAgent(sharedClient, memoryManager);
@@ -292,19 +289,15 @@ public class Main {
             System.out.println("🤖 Agent:");
             com.claudecode.plan.ExecutionPlan plan = planAgent.plan(input);
 
-            // 确认循环：用户可补充反馈或修改计划
+            // 确认计划（使用共享 Scanner，避免和 PlanReviewHandler 的 Scanner 冲突）
             while (true) {
                 System.out.print("📝 确认计划 [回车执行 / 输入补充说明 / 'n'取消]: ");
                 String feedback = scanner.nextLine().trim();
-
-                if (feedback.isEmpty()) {
-                    break;  // 回车 → 执行
-                }
+                if (feedback.isEmpty()) break;
                 if ("n".equalsIgnoreCase(feedback) || "no".equalsIgnoreCase(feedback)) {
                     System.out.println("🚫 计划已取消\n");
                     return;
                 }
-                // 用户给了反馈 → 重新规划
                 System.out.println("🔄 根据反馈重新规划...\n");
                 plan = planAgent.replan(plan, feedback);
                 System.out.println(plan.visualize());
