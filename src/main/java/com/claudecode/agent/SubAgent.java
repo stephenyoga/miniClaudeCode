@@ -156,8 +156,13 @@ public class SubAgent {
     private Map<String, String> parseArguments(String argumentsJson) {
         if (argumentsJson == null || argumentsJson.isBlank()) return Map.of();
         try {
-            return mapper.readValue(argumentsJson,
-                    new TypeReference<Map<String, String>>() {});
+            Map<String, Object> raw = mapper.readValue(argumentsJson,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            Map<String, String> result = new java.util.LinkedHashMap<>();
+            for (var e : raw.entrySet()) {
+                result.put(e.getKey(), e.getValue() == null ? "" : String.valueOf(e.getValue()));
+            }
+            return result;
         } catch (Exception e) {
             return Map.of("arguments", argumentsJson);
         }

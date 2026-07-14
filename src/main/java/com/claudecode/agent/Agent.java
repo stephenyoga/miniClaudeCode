@@ -30,8 +30,7 @@ public class Agent {
 
     private int totalPromptTokens = 0;
     private int totalCompletionTokens = 0;
-    private int totalTokens = 0;
-    private int apiCallCount = 0;
+    private String originalSystemPrompt;
 
     public Agent(DeepSeekClient llmClient, MemoryManager mm) {
         this.llmClient = llmClient;
@@ -203,9 +202,13 @@ public class Agent {
     // ══════════════════════════════════════════════════
 
     private void injectMemoryToSystemPrompt(String userInput) {
+        // 首次调用时保存原始 system prompt，避免记忆上下文重复叠加
+        if (originalSystemPrompt == null) {
+            originalSystemPrompt = mm.getSystemPrompt();
+        }
         String memoryCtx = mm.buildContextForQuery(userInput, 500);
         if (!memoryCtx.isEmpty()) {
-            mm.updateSystemPrompt(mm.getSystemPrompt() + memoryCtx);
+            mm.updateSystemPrompt(originalSystemPrompt + memoryCtx);
         }
     }
 
@@ -217,8 +220,6 @@ public class Agent {
         if (response.usage() != null) {
             totalPromptTokens += response.usage().promptTokens();
             totalCompletionTokens += response.usage().completionTokens();
-            totalTokens += response.usage().totalTokens();
-            apiCallCount++;
         }
     }
 
@@ -249,7 +250,13 @@ public class Agent {
     private Map<String, String> parseArguments(String argumentsJson) {
         if (argumentsJson == null || argumentsJson.isBlank()) return Map.of();
         try {
-            return objectMapper.readValue(argumentsJson, new TypeReference<Map<String, String>>() {});
+            Map<String, Object> raw = objectMapper.readValue(argumentsJson,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            Map<String, String> result = new java.util.LinkedHashMap<>();
+            for (var e : raw.entrySet()) {
+                result.put(e.getKey(), e.getValue() == null ? "" : String.valueOf(e.getValue()));
+            }
+            return result;
         } catch (Exception e) {
             return Map.of("arguments", argumentsJson);
         }
@@ -271,8 +278,6 @@ public class Agent {
     public void resetTokenStats() {
         totalPromptTokens = 0;
         totalCompletionTokens = 0;
-        totalTokens = 0;
-        apiCallCount = 0;
     }
 
     public String getSystemInfo() {

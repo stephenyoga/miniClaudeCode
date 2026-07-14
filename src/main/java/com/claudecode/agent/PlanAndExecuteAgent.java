@@ -395,19 +395,10 @@ public class PlanAndExecuteAgent {
     // ══════════════════════════════════════════════════
 
     private static class ConsoleReviewHandler implements PlanReviewHandler {
-        private final Scanner scanner = new Scanner(System.in);
-
         @Override
         public PlanReviewDecision review(String goal, ExecutionPlan plan) {
-            System.out.print("是否执行此计划？[y=执行 / n=取消 / 输入补充要求]: ");
-            String input = scanner.nextLine().trim();
-            if (input.isEmpty() || input.equalsIgnoreCase("y")) {
-                return PlanReviewDecision.execute();
-            }
-            if (input.equalsIgnoreCase("n")) {
-                return PlanReviewDecision.cancel();
-            }
-            return PlanReviewDecision.supplement(input);
+            System.out.println(plan.visualize() + "\n");
+            return PlanReviewDecision.execute();
         }
     }
 
@@ -443,8 +434,13 @@ public class PlanAndExecuteAgent {
     private Map<String, String> parseArguments(String argumentsJson) {
         if (argumentsJson == null || argumentsJson.isBlank()) return Map.of();
         try {
-            return mapper.readValue(argumentsJson,
-                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {});
+            Map<String, Object> raw = mapper.readValue(argumentsJson,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            Map<String, String> result = new java.util.LinkedHashMap<>();
+            for (var e : raw.entrySet()) {
+                result.put(e.getKey(), e.getValue() == null ? "" : String.valueOf(e.getValue()));
+            }
+            return result;
         } catch (Exception e) {
             return Map.of("arguments", argumentsJson);
         }

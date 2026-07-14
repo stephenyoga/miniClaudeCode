@@ -113,7 +113,9 @@ public class ContextCompressor {
                 if (!isPersistentFact(key, value)) continue;
                 longTerm.store(new MemoryEntry(value, MemoryType.FACT, Map.of("key", key)));
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            System.err.println("⚠️ 事实提取失败: " + e.getMessage());
+        }
     }
 
     /** 过滤临时性请求和推测，只保留跨会话成立的耐久事实 */
