@@ -8,26 +8,32 @@ import java.util.List;
 import java.util.logging.Logger;
 
 /**
- * 对话历史压缩器 —— 在 LLM 调用前原地压缩 conversationHistory（List<LLMModels.Message>），
- * 防止长对话撑爆模型上下文窗口。
+ * 对话历史压缩器 —— 在 LLM 调用前原地压缩 conversationHistory。
  *
- * 与 ContextCompressor 的区别：
- * - ContextCompressor 压缩 ConversationMemory（MemoryEntry，用于检索排序）
- * - 本类压缩 List<LLMModels.Message>（实际发送给 LLM API 的消息列表）
+ * 和 ContextCompressor 的区别：
+ * - ContextCompressor 压缩的是 MemoryEntry（用于检索排序的短期记忆）
+ * - 本类压缩的是 List<LLMModels.Message>（实际发送给 LLM API 的消息列表）
  *
+ * 简单说：ContextCompressor 影响检索质量，本类影响实际 Token 消耗。
+ * 两者缺一不可 —— 压缩了短期记忆不代表 API 消息也省了。
+ *
+ * 触发时机：每次调 LLM 之前（Agent.java 第 67 行和第 164 行）。
  * 算法：
- * 1. 估算 conversationHistory 当前 token，未达阈值直接跳过
- * 2. 找出所有 user message 的索引，保留最近 retainRecentRounds 个 user 起算的尾部
- * 3. 把 system 之后、splitIdx 之前的旧消息喂给 LLM 摘要
- * 4. 原地重建：[system] + [user("已压缩摘要")] + [assistant("已了解上下文")] + [尾部]
+ * 1. 估算当前消息列表的 token 数
+ * 2. 超过可用预算 × 80% 则触发
+ * 3. 找到所有 user 消息的索引，保留最近 3 轮
+ * 4. 把更早的消息喂给 LLM 做摘要
+ * 5. 原地替换为：[system] + [user(摘要)] + [assistant(ok)] + [保留的尾部]
  *
- * 分割点必须落在 user message 边界，避免切断 tool_call / tool_result 成对协议。
+ * 关键约束：分割点必须落在 user message 边界，避免切断 tool_call / tool_result 的配对。
  */
 public class ConversationHistoryCompactor {
 
     private static final Logger log = Logger.getLogger(ConversationHistoryCompactor.class.getName());
     private final DeepSeekClient llmClient;
+    /** 保留最近几轮 user 消息不压缩（默认 3 轮） */
     private final int retainRecentRounds;
+    /** 摘要输入的最大字符数，避免输入过长导致 LLM 调用费用过高 */
     private static final int MAX_SUMMARY_INPUT_CHARS = 40_000;
 
     private static final String SUMMARY_PROMPT = """
@@ -57,18 +63,19 @@ public class ConversationHistoryCompactor {
     /**
      * 评估并按需原地压缩 conversationHistory。
      *
-     * @param history         Agent 主循环的对话历史，调用后可能被原地替换为更短列表
-     * @param availableTokens 对话历史可用的 token 预算（通常由 TokenBudget.getAvailableForConversation() 提供）
+     * @param history         Agent 主循环的对话历史列表，压缩后会原地替换
+     * @param availableTokens 对话历史可用的 Token 预算
      * @return 是否执行了压缩
      */
     public boolean compactIfNeeded(List<LLMModels.Message> history, int availableTokens) {
         if (history == null || history.isEmpty()) return false;
 
+        // 估算当前 token 数，未到阈值直接跳过
         int currentTokens = estimateTokens(history);
         int triggerThreshold = (int) (availableTokens * 0.8);
         if (currentTokens < triggerThreshold) return false;
 
-        // 找 system 之后 user 消息的索引
+        // 找到 system 之后所有 user 消息的索引
         int systemEnd = "system".equals(history.get(0).role()) ? 1 : 0;
         List<Integer> userIndices = new ArrayList<>();
         for (int i = systemEnd; i < history.size(); i++) {
@@ -77,17 +84,21 @@ public class ConversationHistoryCompactor {
             }
         }
 
+        // 如果 user 消息太少，不值得压缩
         if (userIndices.size() <= retainRecentRounds) {
-            log.fine("compactIfNeeded skip: only " + userIndices.size() + " user turns, <= retain " + retainRecentRounds);
+            log.fine("compactIfNeeded skip: only " + userIndices.size() + " user turns");
             return false;
         }
 
+        // 分割点 = 倒数第 retainRecentRounds 个 user 消息的位置
         int splitIdx = userIndices.get(userIndices.size() - retainRecentRounds);
         if (splitIdx <= systemEnd) return false;
 
+        // 取出 system 之后、分割点之前的旧消息（不包含 system）
         List<LLMModels.Message> oldMsgs = new ArrayList<>(history.subList(systemEnd, splitIdx));
         if (oldMsgs.isEmpty()) return false;
 
+        // 调 LLM 生成旧消息的摘要
         String summary;
         try {
             summary = summarize(oldMsgs);
@@ -97,15 +108,14 @@ public class ConversationHistoryCompactor {
         }
         if (summary == null || summary.isBlank()) return false;
 
-        // 原地重建
+        // 原地重建消息列表：
+        // [system] + [user(摘要)] + [assistant(已了解)] + [尾部保留的近期消息]
         List<LLMModels.Message> rebuilt = new ArrayList<>();
         for (int i = 0; i < systemEnd; i++) {
             rebuilt.add(history.get(i));
         }
         rebuilt.add(LLMModels.Message.user("[已压缩的历史对话摘要]\n" + summary.trim()));
         rebuilt.add(LLMModels.Message.assistant("好的，我已了解之前的上下文，请继续。"));
-
-        // 保留尾部近期消息
         rebuilt.addAll(new ArrayList<>(history.subList(splitIdx, history.size())));
 
         int afterTokens = estimateTokens(rebuilt);
@@ -116,6 +126,10 @@ public class ConversationHistoryCompactor {
         return true;
     }
 
+    /**
+     * 把旧消息列表转换为文本，调 LLM 生成摘要。
+     * 每条消息格式："角色: 内容"，工具调用会额外标注 TOOL_CALL。
+     */
     private String summarize(List<LLMModels.Message> messages) throws Exception {
         StringBuilder sb = new StringBuilder();
         for (LLMModels.Message m : messages) {
@@ -145,7 +159,11 @@ public class ConversationHistoryCompactor {
         return resp != null ? resp.getContent() : null;
     }
 
-    /** 估算消息列表的 token 数 */
+    /**
+     * 估算消息列表的 Token 数。
+     * 使用 MemoryEntry.estimateTokens 估算每条消息的内容，
+     * 再加每条消息 4 token 的 role/separator 固定开销。
+     */
     public static int estimateTokens(List<LLMModels.Message> messages) {
         if (messages == null) return 0;
         int total = 0;
@@ -161,7 +179,7 @@ public class ConversationHistoryCompactor {
                 }
             }
         }
-        total += messages.size() * 4; // role/separator 固定开销
+        total += messages.size() * 4;
         return total;
     }
 

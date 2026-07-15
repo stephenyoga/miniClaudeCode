@@ -5,18 +5,28 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.File;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
- * 长期记忆 —— 跨会话持久化到磁盘，自动去重。
- * 存储路径优先级：环境变量 MEMORY_DIR > JVM 参数 -Dmemory.dir > 默认路径
+ * 长期记忆 —— 跨会话持久化到磁盘 JSON 文件，重启后仍在。
+ *
+ * 存储路径优先级：
+ * 1. 环境变量 MEMORY_DIR
+ * 2. JVM 参数 -Dmemory.dir
+ * 3. 默认项目根目录下的 memory_db/ 文件夹
+ *
+ * 特点：
+ * - 自动去重（同 key 覆盖、内容完全相同跳过）
+ * - 启动时从 JSON 文件加载全部记忆到内存
+ * - 每次 store/clear 都会立即写盘
+ * - 不设 Token 预算上限（getUsageRatio 返回 0）
  */
 public class LongTermMemory implements Memory {
 
+    /** LinkedHashMap 保证插入顺序，用于 key 覆盖时的顺序维护 */
     private final LinkedHashMap<String, MemoryEntry> entries = new LinkedHashMap<>();
     private final AtomicInteger tokenCounter = new AtomicInteger(0);
     private final File storageFile;
@@ -31,6 +41,7 @@ public class LongTermMemory implements Memory {
         loadFromDisk();
     }
 
+    /** 按优先级解析存储目录 */
     private String resolveStorageDir() {
         String env = System.getenv("MEMORY_DIR");
         if (env != null && !env.isEmpty()) return env;
@@ -39,9 +50,15 @@ public class LongTermMemory implements Memory {
         return DEFAULT_DIR;
     }
 
+    /**
+     * 存储一条记忆。
+     * 先检查 key 覆盖：如果 metadata 中有 key 且已有同 key 条目，删除旧条目并修正 token 计数。
+     * 再检查内容去重：完全相同的内容跳过。
+     * 最后写入并持久化到磁盘。
+     */
     @Override
-    public void store(MemoryEntry entry) {
-        // 相同 key 覆盖：如果 metadata 中有 key 且已有同 key 条目，删除旧条目
+    public synchronized void store(MemoryEntry entry) {
+        // 1. 同 key 覆盖（如"JDK 版本偏好"第二次存时会覆盖第一次的）
         String key = entry.metadata().get("key");
         if (key != null && !key.isEmpty()) {
             entries.values().removeIf(e -> {
@@ -52,20 +69,23 @@ public class LongTermMemory implements Memory {
                 return false;
             });
         }
-        // 内容完全相同跳过
+        // 2. 内容完全相同跳过
         boolean exists = entries.values().stream()
                 .anyMatch(e -> e.content().equals(entry.content()));
         if (exists) return;
 
+        // 3. 存入
         entries.put(entry.id(), entry);
         tokenCounter.addAndGet(entry.tokenCount());
         saveToDisk();
     }
 
+    /** 批量存储多条记忆 */
     public void storeAll(List<MemoryEntry> batch) {
         for (MemoryEntry e : batch) store(e);
     }
 
+    /** 记忆检索：内容分词匹配 + metadata 值匹配 */
     @Override
     public List<MemoryEntry> search(String query, int limit) {
         Set<String> tokens = MemoryQueryTokenizer.tokenize(query);
@@ -83,16 +103,15 @@ public class LongTermMemory implements Memory {
     public List<MemoryEntry> getAll() { return List.copyOf(entries.values()); }
 
     @Override
-    public void clear() {
+    public synchronized void clear() {
         entries.clear();
         tokenCounter.set(0);
         saveToDisk();
     }
 
+    /** 长期记忆不设预算上限 */
     @Override
-    public double getUsageRatio() {
-        return 0; // 长期记忆不设预算上限
-    }
+    public double getUsageRatio() { return 0; }
 
     public int size() { return entries.size(); }
     public int tokenCount() { return tokenCounter.get(); }
@@ -106,21 +125,24 @@ public class LongTermMemory implements Memory {
                 typeCounts.getOrDefault(MemoryType.SUMMARY, 0L));
     }
 
-    /** 按内容精确匹配查找 */
+    /** 按内容精确查找 */
     public Optional<MemoryEntry> findByContent(String content) {
         return entries.values().stream()
                 .filter(e -> e.content().equals(content))
                 .findFirst();
     }
 
-    // ── 持久化 ──
+    // ════════════════════════════════════════
+    //  持久化：JSON 文件的读写
+    // ════════════════════════════════════════
 
+    /** 从 JSON 文件加载记忆到内存，启动时调用 */
     @SuppressWarnings("unchecked")
     private void loadFromDisk() {
         if (!storageFile.exists()) return;
         try {
             List<Map<String, Object>> raw = mapper.readValue(storageFile, List.class);
-            // 后入覆盖：同 key 保留最新时间戳，清理历史积攒的脏数据
+            // 后入覆盖：同 key 的记忆只保留最新时间戳的那条
             Map<String, MemoryEntry> dedup = new LinkedHashMap<>();
             for (Map<String, Object> map : raw) {
                 MemoryEntry e = deserialize(map);
@@ -144,6 +166,7 @@ public class LongTermMemory implements Memory {
         } catch (Exception ignored) {}
     }
 
+    /** 将当前所有记忆写入 JSON 文件 */
     private synchronized void saveToDisk() {
         try {
             storageFile.getParentFile().mkdirs();
@@ -162,6 +185,7 @@ public class LongTermMemory implements Memory {
         } catch (Exception ignored) {}
     }
 
+    /** 从 JSON map 反序列化为 MemoryEntry */
     @SuppressWarnings("unchecked")
     private MemoryEntry deserialize(Map<String, Object> map) {
         String id = (String) map.get("id");

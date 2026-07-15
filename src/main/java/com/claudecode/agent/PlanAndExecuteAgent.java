@@ -17,9 +17,30 @@ import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * Plan-and-Execute Agent —— 将复杂任务先规划为可执行计划，再按拓扑序逐项执行。
+ * Plan-and-Execute Agent —— 先规划再执行，适合复杂多步骤任务。
  *
- * 架构：Planner（规划）→ Review（用户审查）→ Executor（mini ReAct 多轮工具调用）→ Summarizer（总结）
+ * 执行流程（三阶段）：
+ *
+ * Phase 1 - 规划（plan）
+ *   调一次 LLM，把用户需求拆解为带依赖的 DAG 计划（JSON 格式）。
+ *   支持分层规划（/hplan）：先定宏观阶段 → 逐阶段细化子任务。
+ *
+ * Phase 2 - 执行（execute）
+ *   拓扑排序确定执行顺序 → 按批次执行（入度为 0 的任务可同时执行）。
+ *   每个任务有自己的 mini ReAct 循环（最多 5 轮工具调用）。
+ *   并行批次用虚拟线程 + CompletableFuture 调度，ByteArrayOutputStream 防输出交错。
+ *   累计 2+ 失败且失败率 > 50% 时触发重新规划。
+ *
+ * Phase 3 - 总结（summarize）
+ *   所有任务执行完后，调 LLM 汇总关键结果。
+ *
+ * 审查机制：
+ *   PlanReviewHandler 在执行前让用户审查计划，
+ *   y=执行 / n=取消 / 输入补充要求则重新规划。
+ *
+ * Plan 模式 vs Team 模式：
+ *   Plan 更轻量，适合"执行就行"的场景。
+ *   Team 有 Reviewer 角色逐步骤审查，质量更高。
  */
 public class PlanAndExecuteAgent {
 

@@ -14,8 +14,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 子代理 —— 轻量独立 Agent，每个 SubAgent 有独立的角色、系统提示和对话历史，
- * 但共享 LLM 客户端和工具注册表。
+ * 子代理 —— 可复用的轻量 Agent，用于 Multi-Agent 协作。
+ *
+ * 与 Agent 的区别：
+ * - 有独立的对话历史（每个 SubAgent 各一份）
+ * - 角色化 system prompt（PLANNER / WORKER / REVIEWER 各有不同的提示词）
+ * - 只有 WORKER 可以调用工具，PLANNER 和 REVIEWER 只能输出分析
+ * - 支持注入外部 PrintStream（并行执行时各写各的 buffer，防输出交错）
+ *
+ * 生命周期：创建 → execute(任务) → clearHistory() → execute(下一个任务)
  */
 public class SubAgent {
 
@@ -23,6 +30,7 @@ public class SubAgent {
     private final MultiAgentRole role;
     private final DeepSeekClient llmClient;
     private final ToolRegistry toolRegistry;
+    /** 独立的对话历史，不受 Agent 主循环和其他 SubAgent 影响 */
     private final List<LLMModels.Message> conversation;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -34,15 +42,22 @@ public class SubAgent {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.conversation = new ArrayList<>();
+        // 初始化时注入角色对应的 system prompt
         this.conversation.add(LLMModels.Message.system(buildSystemPrompt()));
     }
 
-    /** 执行任务，返回结果消息 */
+    /**
+     * 执行任务（输出到 System.out）。
+     * 内部是 mini ReAct 循环：调 LLM → 有工具调用则执行 → 继续循环 → 直到 LLM 直接回答。
+     */
     public MultiAgentMessage execute(MultiAgentMessage task) {
         return execute(task, System.out);
     }
 
-    /** 执行任务并将输出写入指定流（用于并行时防交错） */
+    /**
+     * 执行任务并将流式输出写入指定 PrintStream。
+     * 并行执行时每个 SubAgent 写入自己的 ByteArrayOutputStream，最后顺序 flush。
+     */
     public MultiAgentMessage execute(MultiAgentMessage task, PrintStream out) {
         conversation.add(LLMModels.Message.user(task.content()));
 
@@ -51,17 +66,19 @@ public class SubAgent {
             iteration++;
 
             try {
+                // 只有 WORKER 传递工具定义，PLANNER 和 REVIEWER 不做工具调用
                 LLMModels.ChatResponse response = llmClient.chat(
                         conversation, shouldUseTools() ? toolDefinitions() : null);
 
                 if (!response.hasToolCalls()) {
+                    // LLM 直接回答 → 保存到对话历史并返回结果
                     String content = response.getContent();
                     conversation.add(LLMModels.Message.assistant(content));
                     out.println(content);
                     return MultiAgentMessage.result(name, role, content);
                 }
 
-                // 有工具调用
+                // LLM 要调工具 → 执行工具，结果回灌到对话历史后继续循环
                 conversation.add(LLMModels.Message.assistantWithToolCall(response.getToolCalls()));
                 for (LLMModels.ToolCall tc : response.getToolCalls()) {
                     Map<String, String> args = parseArguments(tc.function().arguments());
@@ -77,7 +94,7 @@ public class SubAgent {
         return MultiAgentMessage.error(name, role, "超过最大迭代次数");
     }
 
-    /** 执行任务（带额外上下文） */
+    /** 执行任务（带额外上下文注入，用于 Reviewer 审查不通过后带反馈重试） */
     public MultiAgentMessage executeWithContext(MultiAgentMessage task, String context, PrintStream out) {
         String enriched = context + "\n\n当前任务：" + task.content();
         MultiAgentMessage enrichedTask = new MultiAgentMessage(
@@ -85,7 +102,7 @@ public class SubAgent {
         return execute(enrichedTask, out);
     }
 
-    /** 审查执行结果（Reviewer 专用） */
+    /** Reviewer 审查执行结果 */
     public MultiAgentMessage review(String originalTask, String executionResult) {
         return review(originalTask, executionResult, System.out);
     }
@@ -95,19 +112,20 @@ public class SubAgent {
         return execute(MultiAgentMessage.task("orchestrator", input), out);
     }
 
-    /** 清空对话历史（保留 system prompt） */
+    /** 清空对话历史（保留 system prompt），准备执行下一个独立任务 */
     public void clearHistory() {
         LLMModels.Message sys = conversation.get(0);
         conversation.clear();
         conversation.add(sys);
     }
 
-    /** 只有执行者需要工具 */
+    /** 只有 WORKER 可以调工具，PLANNER 和 REVIEWER 只输出文本 */
     private boolean shouldUseTools() { return role == MultiAgentRole.WORKER; }
 
     public String getName() { return name; }
     public MultiAgentRole getRole() { return role; }
 
+    /** 根据角色加载对应的 system prompt */
     private String buildSystemPrompt() {
         return switch (role) {
             case PLANNER -> PromptAssembler.load("modes/team-planner.md");

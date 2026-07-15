@@ -11,7 +11,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 代码分块器：将代码文件切分为适合 Embedding 的粒度
+ * 代码分块器 —— 将代码文件切分为适合 Embedding 的粒度。
+ *
+ * 策略：
+ * - Java 文件：用 JavaParser 解析 AST，按 class 和 method 边界分块
+ *   - 类级别：文件中的每个类声明作为一个 chunk
+ *   - 方法级别：类中的每个方法作为一个 chunk（大方法独立成块）
+ * - 非 Java 文件：按行分段，每段不超过 MAX_CHUNK_CHARS（2000 字符）
+ *
+ * 分块目的：代码块越小越精确，embedding 检索时能精确找到"哪个类/哪个方法"。
  */
 public class CodeChunker {
 

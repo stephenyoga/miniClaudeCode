@@ -14,12 +14,24 @@ import java.util.concurrent.*;
 /**
  * Agent 编排器 —— 多 Agent 协作的"主控"。
  *
- * 协作流程：
- * 1. 用户输入 → Planner 拆解为步骤
- * 2. 解析计划 → 生成步骤 DAG
- * 3. 按依赖顺序分批执行（并行 + 池化 Worker）
- * 4. 每步执行完 → Reviewer 审查 → 不通过则重试（最多 2 次）
- * 5. 汇总结果
+ * 角色分工：
+ * - PLANNER（1 个）：分析用户需求，拆解为有依赖关系的步骤
+ * - WORKER（2 个）：执行具体步骤，可调用工具
+ * - REVIEWER（1 个）：审查执行结果，不通过则带反馈重试
+ *
+ * 执行流程：
+ * 1. Planner 规划 → 输出 JSON 计划
+ * 2. 解析计划 → 生成 ExecutionStep 列表（含依赖关系）
+ * 3. 按依赖分批执行：
+ *    - 单步批次：串行流式输出（实时性更好）
+ *    - 多步批次：BlockingQueue 池化 Worker + ByteArrayOutputStream 防交错
+ * 4. 每步执行后 → Reviewer 审查
+ * 5. 审查不通过 → 最多重试 2 次（带上 reviewer 的反馈）
+ * 6. 所有步骤完成后 → 汇总结果
+ *
+ * 与 Plan-and-Execute 的区别：
+ * - P&E 是"失败统计够了再重新规划"，Team 是"每一步都审查"
+ * - P&E 失败的 task 会被级联跳过，Team 失败的 step 会带反馈重做
  */
 public class AgentOrchestrator {
 

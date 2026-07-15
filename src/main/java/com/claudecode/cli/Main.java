@@ -18,8 +18,21 @@ import java.nio.charset.StandardCharsets;
 import java.util.Scanner;
 
 /**
- * 交互式命令行界面
- * 提供用户与Agent交互的入口
+ * 交互式命令行入口 —— 用户的对话界面。
+ *
+ * 启动流程：
+ * 1. 打印 banner
+ * 2. 加载 .env 配置（API Key + 模型选择）
+ * 3. 创建 DeepSeekClient、MemoryManager、Agent 实例
+ * 4. 进入交互式 while 循环
+ *
+ * 主循环逻辑：
+ * - 用户输入 → 命令处理（/开头的命令）→ 或 AI 对话
+ * - 对话模式分发：REACT / PLAN_EXECUTE / TEAM 三种模式
+ * - REACT 模式下 hasPlan() 自动判断是否切 P&E（输入 >50 字或命中 3+ 关键词）
+ *
+ * 命令：
+ * /memory /save /plan /team /thinking /index /search /clear /tokens /info
  */
 public class Main {
 

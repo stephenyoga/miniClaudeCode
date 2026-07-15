@@ -8,7 +8,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * SQLite 向量存储，管理代码块和代码关系
+ * SQLite 向量存储 —— 管理代码块和代码关系的持久化。
+ *
+ * 两张表：
+ * - code_chunks：存储代码块的文本和向量，支持余弦相似度搜索
+ * - code_relations：存储类/方法间的依赖关系（继承、调用、包含等）
+ *
+ * 向量以 JSON 数组形式存为 TEXT 字段（如 "[0.1, 0.2, ...]"），
+ * 检索时全表逐条计算余弦相似度。对于几百到几千个块的规模足够了。
+ * 如果代码库很大（10万+块），可以换 FAISS 或 pgvector。
+ *
+ * 注意：每个项目一个独立的 project_path 隔离，同一个 SQLite 文件可存多个项目。
  */
 public class VectorStore implements AutoCloseable {
 

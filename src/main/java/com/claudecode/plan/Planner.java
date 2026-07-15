@@ -10,14 +10,30 @@ import java.io.IOException;
 import java.util.*;
 
 /**
- * 规划器 —— 将用户目标分解为可执行的计划。
- * 负责与 LLM 交互生成 JSON 计划，解析并构建 Task DAG。
+ * 规划器 —— 将用户需求拆解为可执行的 DAG 计划。
+ *
+ * 支持两种规划模式：
+ *
+ * 1. 单层规划（createPlan）
+ *    一次 LLM 调用直接输出完整计划 JSON，适合 3-8 步的任务。
+ *
+ * 2. 分层规划（createPlanHierarchical）
+ *    两次 LLM 调用：先定宏观阶段 → 再逐阶段细化子任务。
+ *    适合超过 10 步的大型任务，避免单次 token 溢出。
+ *
+ * LLM 输出 JSON 后，parsePlan 负责：
+ * - 清理 markdown 包装
+ * - 提取 JSON 中的 tasks 数组
+ * - 重编号 task ID
+ * - 建立 dependencies/dependents 双向依赖
+ * - 拓扑排序检测环
  */
 public class Planner {
 
     private final DeepSeekClient llmClient;
     private final ObjectMapper mapper;
 
+    // 提示词从外部 .md 文件加载（改提示词不需要重新编译）
     private static final String PHASE_PROMPT = PromptAssembler.load("modes/planner-phase.md");
     private static final String PHASE_DETAIL_PROMPT = PromptAssembler.load("modes/planner-phase-detail.md");
     private static final String PLANNING_PROMPT = PromptAssembler.load("modes/planner.md");
@@ -32,9 +48,14 @@ public class Planner {
     }
 
     // ══════════════════════════════════════════════════
-    //  创建计划
+    //  单层规划
     // ══════════════════════════════════════════════════
 
+    /**
+     * 单层规划：一次 LLM 调用生成完整计划。
+     * @param goal 用户需求
+     * @return 解析后的 ExecutionPlan
+     */
     public ExecutionPlan createPlan(String goal) throws IOException {
         List<LLMModels.Message> messages = Arrays.asList(
                 LLMModels.Message.system(PLANNING_PROMPT),
@@ -46,9 +67,18 @@ public class Planner {
     }
 
     // ══════════════════════════════════════════════════
-    //  分层规划：先定阶段 → 再细化每个阶段
+    //  分层规划
     // ══════════════════════════════════════════════════
 
+    /**
+     * 分层规划：先定宏观阶段 → 再逐阶段细化子任务。
+     *
+     * 流程：
+     * 1. 第一层 LLM 调用 → 输出阶段列表（2-4 个 phase）
+     * 2. 逐阶段调用 LLM → 每个阶段输出自己的子任务
+     * 3. 阶段间门控：phase_2 的第一个 task 依赖 phase_1 的全部 task
+     * 4. 拓扑排序检测环
+     */
     public ExecutionPlan createPlanHierarchical(String goal) throws IOException {
         System.out.println("  📌 第一层：宏观规划 —— 确定执行阶段...");
 
@@ -96,11 +126,9 @@ public class Planner {
             JsonNode detailRoot = mapper.readTree(detailJson);
 
             List<String> currentPhaseTaskIds = new ArrayList<>();
-
-            // 单个阶段内 ID 映射（仅用于本阶段内部依赖解析）
             Map<String, String> phaseIdMap = new LinkedHashMap<>();
 
-            // 第一遍：创建任务
+            // 第一遍：创建任务（重新编号，避免和全局 ID 冲突）
             for (JsonNode tn : detailRoot.get("tasks")) {
                 String origId = tn.get("id").asText();
                 String newId = "task_" + globalIndex;
@@ -122,7 +150,7 @@ public class Planner {
                     prevPhaseTaskIds.forEach(task::addDependency);
                 }
 
-                // 本阶段内部依赖（LLM 输出的任务间依赖）
+                // 本阶段内部依赖
                 if (tn.has("dependencies")) {
                     for (JsonNode dep : tn.get("dependencies")) {
                         String mapped = phaseIdMap.get(dep.asText());
@@ -138,7 +166,7 @@ public class Planner {
             prevPhaseTaskIds = currentPhaseTaskIds;
         }
 
-        // 建立双向依赖
+        // 建立反向依赖
         for (Task task : plan.getTasks().values()) {
             for (String depId : task.getDependencies()) {
                 Task dep = plan.getTasks().get(depId);
@@ -158,6 +186,10 @@ public class Planner {
     //  重新规划（基于失败进度）
     // ══════════════════════════════════════════════════
 
+    /**
+     * 在任务失败后重新规划剩余部分。
+     * 将已完成的进度和失败原因发给 LLM，让它生成一份补充计划。
+     */
     public ExecutionPlan replan(ExecutionPlan failedPlan, String failureReason) throws IOException {
         StringBuilder context = new StringBuilder();
         context.append("原始目标: ").append(failedPlan.getGoal()).append("\n\n");
@@ -189,6 +221,17 @@ public class Planner {
     //  JSON 解析 → ExecutionPlan
     // ══════════════════════════════════════════════════
 
+    /**
+     * 解析 LLM 返回的 JSON 计划文本，构建 ExecutionPlan。
+     *
+     * 处理流程：
+     * 1. cleanJson() 去掉 markdown 代码块标记和前后自然语言
+     * 2. 解析 JSON → 读取 tasks 数组
+     * 3. 第一遍：创建所有 Task，LLM 输出的原始 ID 映射为 task_1, task_2...
+     * 4. 第二遍：用映射后的 ID 建立依赖关系
+     * 5. 建立反向依赖（dependents）
+     * 6. 拓扑排序（检测环）
+     */
     private ExecutionPlan parsePlan(String goal, String rawJson) throws IOException {
         String cleaned = cleanJson(rawJson);
         JsonNode root = mapper.readTree(cleaned);
@@ -199,7 +242,7 @@ public class Planner {
         ExecutionPlan plan = new ExecutionPlan(generatePlanId(), goal);
         plan.setSummary(summary);
 
-        // ── 第一遍：创建所有 Task，建立 ID 映射 ──
+        // 第一遍：创建所有 Task，建立 ID 映射
         Map<String, String> idMapping = new LinkedHashMap<>();
         int taskIndex = 1;
 
@@ -215,7 +258,7 @@ public class Planner {
             plan.addTask(task);
         }
 
-        // ── 第二遍：处理依赖关系（用映射后的 ID） ──
+        // 第二遍：处理依赖关系（用映射后的 ID）
         taskIndex = 1;
         for (JsonNode taskNode : tasksNode) {
             String newId = "task_" + taskIndex++;
@@ -232,7 +275,7 @@ public class Planner {
             }
         }
 
-        // ── 建立反向依赖（dependents） ──
+        // 建立反向依赖（dependents）
         for (Task task : plan.getTasks().values()) {
             for (String depId : task.getDependencies()) {
                 Task dep = plan.getTasks().get(depId);
@@ -242,7 +285,7 @@ public class Planner {
             }
         }
 
-        // ── 拓扑排序 ──
+        // 拓扑排序
         if (!plan.computeExecutionOrder()) {
             throw new IllegalStateException("任务依赖关系存在环，无法执行！");
         }
@@ -254,12 +297,14 @@ public class Planner {
     //  Helpers
     // ══════════════════════════════════════════════════
 
-    /** 清理 LLM 输出中可能包裹的 markdown 代码块 */
+    /**
+     * 清理 LLM 输出中可能包裹的 markdown 代码块和前后自然语言。
+     * 先去掉 ```json 和 ```，再提取第一个 { 到最后一个 } 之间的内容。
+     */
     private String cleanJson(String raw) {
         String s = raw.replaceAll("```json\\s*", "")
                 .replaceAll("```\\s*", "")
                 .trim();
-        // 提取第一个 { 到最后一个 } 之间的内容
         int start = s.indexOf('{');
         int end = s.lastIndexOf('}');
         if (start >= 0 && end > start) {
@@ -271,5 +316,4 @@ public class Planner {
     private String generatePlanId() {
         return "plan_" + System.currentTimeMillis();
     }
-
 }

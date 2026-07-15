@@ -1,7 +1,10 @@
 package com.claudecode.agent;
 
 /**
- * 多 Agent 角色定义 —— 规划-执行-审查 分工协作
+ * 多 Agent 角色定义 —— 规划-执行-审查 分工协作。
+ *
+ * 三个角色构成一条流水线：
+ * PLANNER 拆解任务 → WORKER 执行 → REVIEWER 质检
  */
 public enum MultiAgentRole {
     PLANNER("规划者", "分析任务并制定执行计划"),

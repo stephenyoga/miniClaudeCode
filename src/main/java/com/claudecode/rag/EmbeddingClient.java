@@ -9,7 +9,19 @@ import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Embedding 客户端，支持 Ollama 和 OpenAI 兼容的远程 API
+ * Embedding 客户端 —— 调用 Ollama 或 OpenAI 兼容 API 生成文本向量。
+ *
+ * 向量用于计算文本之间的语义相似度。
+ * "JDK 版本"和"Java 版本"的向量距离应该很近，即使文本内容不同。
+ *
+ * 支持两种后端：
+ * - Ollama（默认）：http://localhost:11434/api/embeddings，模型 nomic-embed-text
+ * - OpenAI 兼容：如智谱 GLM 的 embedding 接口，Bearer token 认证
+ *
+ * 配置通过 .env 文件：
+ *   EMBEDDING_PROVIDER=ollama
+ *   EMBEDDING_MODEL=nomic-embed-text:latest
+ *   EMBEDDING_BASE_URL=http://localhost:11434
  */
 public class EmbeddingClient {
 

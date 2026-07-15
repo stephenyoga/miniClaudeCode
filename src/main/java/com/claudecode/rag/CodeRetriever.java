@@ -4,7 +4,20 @@ import java.sql.SQLException;
 import java.util.*;
 
 /**
- * 代码检索器：语义检索 + 关键词检索的统一入口
+ * 代码检索器 —— 语义检索 + 关键词检索的统一入口。
+ *
+ * 支持 3 种检索方式：
+ * - semanticSearch：向量余弦相似度检索（需要 Embedding 服务）
+ * - keywordSearch：SQL LIKE 精确匹配类名/方法名/内容
+ * - hybridSearch：混合检索（推荐），语义 + 关键词分别跑 → 合并去重 → 类型加分 → 同文件限流
+ *
+ * 混合检索流程：
+ * 1. 语义检索取 TopK×2 候选
+ * 2. 双字分词 → 每个 token 做关键词检索
+ * 3. 合并结果（双重命中加分 +0.1）
+ * 4. 类型加分（method +0.15, class +0.1）
+ * 5. 同文件最多 2 条
+ * 6. 排序后返回 TopK
  */
 public class CodeRetriever implements AutoCloseable {
 

@@ -7,7 +7,16 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 代码索引管理器：将代码库分块、向量化、持久化到 SQLite
+ * 代码索引管理器 —— 将代码库分块 → 向量化 → 持久化到 SQLite。
+ *
+ * 流程：
+ * 1. collectFiles() 遍历项目目录，跳过 node_modules、.git、target 等
+ * 2. CodeChunker.chunkFile() 把每个文件切分成语义块（类级/方法级/行级）
+ * 3. EmbeddingClient.embed() 把每个块转成向量（调用 Ollama 或 API）
+ * 4. CodeAnalyzer.analyzeFile() 提取代码关系（仅 Java 文件）
+ * 5. VectorStore 写入 SQLite（code_chunks + code_relations 两张表）
+ *
+ * 用户命令：/index D:\myproject
  */
 public class CodeIndex {
 

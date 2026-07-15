@@ -16,7 +16,16 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * 代码分析器：提取代码关系（extends, implements, imports, calls, contains）
+ * 代码分析器 —— 基于 JavaParser AST 提取代码关系图谱。
+ *
+ * 提取 5 种关系类型：
+ * - extends:    类继承（A extends B）
+ * - implements: 接口实现（A implements B）
+ * - imports:    导入依赖（import com.example.Service）
+ * - contains:   包含关系（类中有哪些方法）
+ * - calls:      方法调用（A.method 调用了 B.method）
+ *
+ * 关系数据存入 SQLite code_relations 表，可通过 /search 查询。
  */
 public class CodeAnalyzer {
 

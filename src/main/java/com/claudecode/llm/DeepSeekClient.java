@@ -14,8 +14,23 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * DeepSeek API 客户端，封装与 DeepSeek 大语言模型的 HTTP 通信。
- * 继承自 LLMClient，复用通用的 HTTP 客户端配置。
+ * DeepSeek API 客户端 —— 封装与 DeepSeek 大语言模型的 HTTP 通信。
+ *
+ * 支持三种调用方式：
+ * 1. chat(List<Map>)       — 简单文本对话（遗留方法，未使用）
+ * 2. chat(List<Message>)   — 完整对话 + 工具调用（非流式）
+ * 3. chatStream(...)       — 流式对话 + 工具调用（主流程使用）
+ *
+ * 支持 DeepSeek 特有功能：
+ * - 思考模式（thinking = enabled/disabled）
+ * - 思考强度（reasoning_effort = high/max）
+ * - 流式 tool_calls 积累（按 index 合并增量参数）
+ *
+ * 流式响应处理：
+ * 1. 逐行读取 SSE 格式的 "data: {json}" 响应
+ * 2. reasoning_content 和 content 通过回调实时推送
+ * 3. tool_calls 按 index 累加参数（流式模式参数是分片过来的）
+ * 4. 最终的 usage 从最后一个 chunk 提取
  */
 public class DeepSeekClient extends LLMClient {
 

@@ -5,20 +5,33 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 任务模型 —— 执行计划中的最小单元。
- * 支持依赖关系（DAG），记录执行时间和结果。
+ * 任务模型 —— DAG 执行计划中的最小单元。
+ *
+ * 每个 Task 有：
+ * - 唯一 ID（如 "task_1"）
+ * - 描述（LLM 生成的步骤说明）
+ * - 类型（FILE_READ / FILE_WRITE / COMMAND / ANALYSIS / VERIFICATION / PLANNING）
+ * - 状态（PENDING → RUNNING → COMPLETED / FAILED / SKIPPED）
+ * - 依赖列表（dependencies）和反向依赖列表（dependents）
+ * - 执行结果和错误信息
+ * - 执行起止时间
+ *
+ * 依赖关系构成 DAG（有向无环图）：
+ * - dependencies：此任务依赖哪些前置任务完成
+ * - dependents：哪些后续任务依赖此任务
+ * - 一个任务的 dependencies 全部 COMPLETED 后才能执行
  */
 public class Task {
-    private final String id;
-    private final String description;
-    private final TaskType type;
-    private TaskStatus status;
-    private String result;
-    private String error;
-    private final List<String> dependencies;
-    private final List<String> dependents;
-    private long startTime;
-    private long endTime;
+    private final String id;                // 任务 ID: "task_1", "task_2"...
+    private final String description;       // LLM 生成的步骤描述
+    private final TaskType type;            // 任务类型
+    private TaskStatus status;              // 当前状态
+    private String result;                  // 执行结果文本
+    private String error;                   // 错误信息
+    private final List<String> dependencies; // 依赖的前置任务 ID 列表
+    private final List<String> dependents;   // 依赖此任务的后继任务 ID 列表
+    private long startTime;                 // 开始执行的时间戳
+    private long endTime;                   // 执行完成/失败的时间戳
 
     public Task(String id, String description, TaskType type) {
         this.id = id;
@@ -31,27 +44,23 @@ public class Task {
 
     // ── 生命周期方法 ──
 
-    /** 标记开始执行，记录开始时间 */
     public void markStarted() {
         this.status = TaskStatus.RUNNING;
         this.startTime = System.currentTimeMillis();
     }
 
-    /** 标记执行成功，记录结果和结束时间 */
     public void markCompleted(String result) {
         this.status = TaskStatus.COMPLETED;
         this.result = result;
         this.endTime = System.currentTimeMillis();
     }
 
-    /** 标记执行失败，记录错误和结束时间 */
     public void markFailed(String error) {
         this.status = TaskStatus.FAILED;
         this.error = error;
         this.endTime = System.currentTimeMillis();
     }
 
-    /** 标记被跳过（依赖任务失败导致） */
     public void markSkipped() {
         this.status = TaskStatus.SKIPPED;
     }
@@ -59,20 +68,21 @@ public class Task {
     // ── 依赖判断 ──
 
     /**
-     * 检查所有依赖是否都已完成，是则该任务可以执行。
+     * 检查此任务是否可以执行。
+     * 条件：状态为 PENDING，且所有依赖的任务都已 COMPLETED。
      */
     public boolean isExecutable(Map<String, Task> allTasks) {
         if (status != TaskStatus.PENDING) return false;
         for (String depId : dependencies) {
             Task dep = allTasks.get(depId);
             if (dep == null || dep.getStatus() != TaskStatus.COMPLETED) {
-                return false;
+                return false; // 有依赖未完成
             }
         }
         return true;
     }
 
-    /** 执行耗时（毫秒），未完成则返回 0 */
+    /** 执行耗时（毫秒），未开始则返回 0 */
     public long getDuration() {
         if (startTime == 0) return 0;
         long end = endTime != 0 ? endTime : System.currentTimeMillis();
@@ -81,13 +91,8 @@ public class Task {
 
     // ── 依赖管理 ──
 
-    public void addDependency(String taskId) {
-        this.dependencies.add(taskId);
-    }
-
-    public void addDependent(String taskId) {
-        this.dependents.add(taskId);
-    }
+    public void addDependency(String taskId) { this.dependencies.add(taskId); }
+    public void addDependent(String taskId) { this.dependents.add(taskId); }
 
     // ── Getters ──
 

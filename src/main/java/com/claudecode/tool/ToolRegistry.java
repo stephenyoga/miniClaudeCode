@@ -15,8 +15,22 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 工具注册表
- * 管理所有可用的工具，支持注册、获取和调用工具
+ * 工具注册表 —— 管理所有可被 LLM 调用的工具。
+ *
+ * LLM 通过 Function Calling 看到工具列表，决定调用哪个工具。
+ * 工具列表会作为 tool definitions 随每条消息发给 LLM（见 Agent.getToolDefinitions）。
+ *
+ * 内置 6 个工具：
+ * | 工具名 | 用途 |
+ * |--------|------|
+ * | read_file | 读取文件内容 |
+ * | write_file | 写入/覆盖文件 |
+ * | append_file | 追加内容到文件 |
+ * | list_dir | 列出目录（支持递归）|
+ * | execute_command | 执行 Shell 命令（自动适配 Windows UTF-8）|
+ * | create_project | 创建项目（Java/Python/React/Vue 模板）|
+ *
+ * 每个工具由 Tool record 定义：名称 + 描述 + JSON Schema 参数定义 + 执行逻辑。
  */
 public class ToolRegistry {
 
