@@ -6,6 +6,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import com.claudecode.rag.CodeRetriever;
+import com.claudecode.rag.VectorStore;
+
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.file.Files;
@@ -37,6 +40,9 @@ public class ToolRegistry {
     private static final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, Tool> tools = new HashMap<>();
 
+    /** 当前索引的项目路径（静态共享，search_code 工具用）。默认当前工作目录。 */
+    private static String projectPath = System.getProperty("user.dir");
+
     /**
      * 构造函数，注册所有内置工具
      */
@@ -44,6 +50,12 @@ public class ToolRegistry {
         registerFileTools();
         registerShellTools();
         registerCodeTools();
+        registerRagTools();
+    }
+
+    /** 设置索引的项目路径（/index 命令索引后调用） */
+    public static void setProjectPath(String path) {
+        projectPath = path;
     }
 
     /**
@@ -222,6 +234,72 @@ public class ToolRegistry {
                     }
                 }
         ));
+    }
+
+    /**
+     * 注册 RAG 检索工具 —— search_code。
+     *
+     * 这个工具让 LLM 在对话中自主检索代码库，无需用户手动 /search。
+     * LLM 收到用户的自然语言问题（如"用户登录逻辑在哪"），
+     * 会自主决定调用 search_code 工具来查找相关代码。
+     *
+     * 工具描述明确告诉 LLM：
+     * - 精确符号/文件名定位优先用 read_file / list_dir
+     * - search_code 用于模糊的语义检索
+     */
+    private void registerRagTools() {
+        tools.put("search_code", new Tool(
+                "search_code",
+                "RAG 语义检索代码库，根据自然语言描述查找相关代码块；" +
+                        "精确符号/文件名定位请优先用 read_file / list_dir；默认 top_k=5，上限 30",
+                createParameters(
+                        new Param("query", "string", "自然语言查询描述，如'用户登录的实现'", true),
+                        new Param("top_k", "number", "返回结果条数，默认 5，上限 30", false)
+                ),
+                args -> {
+                    String query = args.get("query");
+                    if (query == null || query.isBlank()) {
+                        return "请提供查询描述";
+                    }
+                    int topK = 5;
+                    try {
+                        topK = Integer.parseInt(args.getOrDefault("top_k", "5"));
+                    } catch (NumberFormatException ignored) {}
+                    topK = Math.max(1, Math.min(topK, 30));
+
+                    try (CodeRetriever retriever = new CodeRetriever(projectPath)) {
+                        var stats = retriever.getStats();
+                        if (stats.chunkCount() == 0) {
+                            return "代码库尚未索引，请先使用 /index 命令索引当前项目。";
+                        }
+                        List<VectorStore.SearchResult> results = retriever.hybridSearch(query, topK);
+                        return formatSearchResults(query, results);
+                    } catch (Exception e) {
+                        return "代码检索失败: " + e.getMessage();
+                    }
+                }
+        ));
+    }
+
+    /**
+     * 将检索结果格式化为文本（返回给 LLM）。
+     * 用简单规则生成摘要，不额外调 LLM。
+     */
+    private String formatSearchResults(String query, List<VectorStore.SearchResult> results) {
+        if (results.isEmpty()) {
+            return "没有找到与 \"" + query + "\" 相关的代码块。";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("检索到 ").append(results.size()).append(" 个相关代码块:\n\n");
+        for (int i = 0; i < results.size(); i++) {
+            VectorStore.SearchResult r = results.get(i);
+            sb.append(i + 1).append(". [").append(r.chunkType()).append(":").append(r.name())
+                    .append("] (相似度 ").append(String.format("%.2f", r.similarity()))
+                    .append(") ").append(r.filePath()).append("\n");
+            String snippet = r.content().length() > 200 ? r.content().substring(0, 200) + "..." : r.content();
+            sb.append("   ").append(snippet.replace("\n", "\n   ")).append("\n\n");
+        }
+        return sb.toString().trim();
     }
 
     /**

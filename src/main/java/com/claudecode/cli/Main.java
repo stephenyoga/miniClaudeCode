@@ -9,6 +9,7 @@ import com.claudecode.agent.AgentOrchestrator;
 import com.claudecode.memory.MemoryManager;
 import com.claudecode.rag.CodeIndex;
 import com.claudecode.rag.CodeRetriever;
+import com.claudecode.tool.ToolRegistry;
 
 import java.io.File;
 import java.util.Map;
@@ -260,6 +261,8 @@ public class Main {
                     String path = command.substring(7).trim();
                     System.out.println("🔍 开始索引代码库: " + path + "\n");
                     String result = new CodeIndex().index(path);
+                    // 同步索引路径到工具注册表，让 search_code 工具能检索刚索引的代码库
+                    ToolRegistry.setProjectPath(path);
                     System.out.println(result + "\n");
                     break;
                 }

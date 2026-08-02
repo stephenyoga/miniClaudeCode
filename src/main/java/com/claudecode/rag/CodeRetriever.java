@@ -11,13 +11,17 @@ import java.util.*;
  * - keywordSearch：SQL LIKE 精确匹配类名/方法名/内容
  * - hybridSearch：混合检索（推荐），语义 + 关键词分别跑 → 合并去重 → 类型加分 → 同文件限流
  *
- * 混合检索流程：
- * 1. 语义检索取 TopK×2 候选
- * 2. 双字分词 → 每个 token 做关键词检索
- * 3. 合并结果（双重命中加分 +0.1）
- * 4. 类型加分（method +0.15, class +0.1）
- * 5. 同文件最多 2 条
- * 6. 排序后返回 TopK
+ * 混合检索（hybridSearch）流程：
+ * 1. 语义检索：查询转向量 → SQLite 全表余弦相似度 → TopK×2 候选
+ * 2. 关键词检索：tokenize() 分词（中文双字 + 英文标识符）→ 每个 token SQL LIKE
+ * 3. 合并去重：按 filePath#name 合并，语义+关键词双重命中 +0.1
+ * 4. 关键词加分：类名命中 +0.3，文件名 +0.1，内容 +0.1
+ * 5. 类型加分：method +0.15, class +0.1（方法比文件更直接回答"怎么实现"）
+ * 6. 同文件限流：每个文件最多 2 条，总数不超过 topK
+ *
+ * 分词器 tokenize() 支持：
+ * - 中文双字滑动窗口（"登录" 匹配 "登录逻辑"）
+ * - 英文代码标识符提取（UserService、handleLogin 等驼峰/下划线命名）
  */
 public class CodeRetriever implements AutoCloseable {
 
@@ -100,12 +104,42 @@ public class CodeRetriever implements AutoCloseable {
         store.close();
     }
 
-    /** 简单的双字分词（与 MemoryQueryTokenizer 一致） */
+    /**
+     * 查询分词器 —— 提取自然语言查询中的代码关键词，用于关键词检索加权。
+     *
+     * 目标：把用户问题里的代码标识符（类名/方法名/变量名）和中文关键词都保留下来。
+     * 例如查询 "用户登录逻辑 UserService"：
+     * - 中文双字窗口 → "用户", "户登", "登录", "录逻", "逻辑"
+     * - 英文标识符    → "UserService"（整体）+ "userservice"（小写匹配）
+     *
+     * 三种提取方式：
+     * 1. 双字滑动窗口：中文 2-gram，如"登录"能匹配"登录逻辑"
+     * 2. 单字兜底：保证中文单字也能参与匹配
+     * 3. 英文标识符：用正则提取驼峰/下划线命名，如 UserService、handle_login
+     *    （SQL LIKE 不区分大小写，所以同时保留原样和小写）
+     */
     private Set<String> tokenize(String text) {
         Set<String> tokens = new HashSet<>();
-        String t = text.toLowerCase();
-        for (int i = 0; i < t.length() - 1; i++) tokens.add(t.substring(i, i + 2));
-        for (int i = 0; i < t.length(); i++) tokens.add(String.valueOf(t.charAt(i)));
+        if (text == null || text.isEmpty()) return tokens;
+        String lower = text.toLowerCase(Locale.ROOT);
+
+        // 方式 1+2：双字滑动窗口 + 单字兜底（中文 2-gram）
+        for (int i = 0; i < lower.length() - 1; i++) tokens.add(lower.substring(i, i + 2));
+        for (int i = 0; i < lower.length(); i++) tokens.add(String.valueOf(lower.charAt(i)));
+
+        // 方式 3：英文代码标识符（驼峰/下划线/数字后缀），如 UserService, handle_login, index2
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("[A-Za-z][A-Za-z0-9_.$]{1,}")
+                .matcher(text);
+        while (m.find()) {
+            String token = m.group();
+            // 保留原样（SQL LIKE 不区分大小写时也能匹配大写类名）
+            tokens.add(token);
+            tokens.add(token.toLowerCase(Locale.ROOT));
+        }
+
+        // 过滤过短的 token（中文单字保留，英文至少 2 字符）
+        tokens.removeIf(t -> t.length() < 2 && t.matches("[A-Za-z0-9_]+"));
         return tokens;
     }
 }
