@@ -1,0 +1,22 @@
+{
+  "id": "003_react_build_run",
+  "title": "写 Java 文件并编译运行",
+  "dimension": "tool_write_run",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "sessions": [
+    {
+      "prompt": "请用 write_file 工具在当前目录创建一个 Java 类 Greeter.java，它在 main 中打印一行文字 Hello from miniClaude，然后用 javac 编译、java 运行它，并告诉我运行输出是什么。"
+    }
+  ],
+  "expectation": "当前目录出现 Greeter.java；内容是一个能编译的、打印目标文案的 main；Agent 通过 execute_command 执行 javac Greeter.java 与 java Greeter，最终答复能给出运行输出中的那句话。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "Greeter.java 是否创建且内容正确可编译",
+      "是否调用了 javac / java 完成编译和运行（消息摘要里有 execute_command 痕迹或答复说明）",
+      "最终答复是否准确反映运行输出文字"
+    ]
+  }
+}

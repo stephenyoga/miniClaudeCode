@@ -1,0 +1,23 @@
+{
+  "id": "007_plan_data_report",
+  "title": "Plan：写数据处理程序并输出结果",
+  "dimension": "plan_execute",
+  "mode": "plan",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "sessions": [
+    {
+      "prompt": "在当前目录完成一个小数据处理任务：先创建 input.txt，内容为 5 行“姓名 分数”数据（例如：小明 90、小红 85、小刚 95、小丽 88、小强 92）；再编写 Analyze.java，读取 input.txt，按分数从高到低排序，把排序结果写入 output.txt（每行“排名. 姓名 分数”），同时在控制台打印总平均分。最后编译并运行，把 output.txt 内容告诉我。"
+    }
+  ],
+  "expectation": "Agent 拆解任务（建输入 → 写分析程序 → 编译运行 → 汇总）并执行；工作区出现 input.txt、Analyze.java、output.txt；output.txt 排序正确（小刚95→小强92→小明90→小丽88→小红85），控制台输出平均分约 90；最终答复附 output.txt 内容。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "是否先形成计划再执行，多步骤按序完成",
+      "input.txt / Analyze.java / output.txt 是否齐全",
+      "output.txt 是否按分数降序且对应正确（95→85 次序），平均分计算是否正确",
+      "是否实际编译运行并给出输出内容"
+    ]
+  }
+}

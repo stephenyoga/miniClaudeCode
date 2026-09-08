@@ -1,0 +1,22 @@
+{
+  "id": "012_react_qna",
+  "title": "基础知识问答：Java final 关键字",
+  "dimension": "react_qna",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "sessions": [
+    {
+      "prompt": "请用简体中文简要解释 Java 中 final 关键字的三种不同用法，并分别为每种用法给出一行最小示例代码。"
+    }
+  ],
+  "expectation": "回答覆盖 final 用于：修饰变量（不可重新赋值/常量）、修饰方法（子类不可重写）、修饰类（不可被继承）；每种有一行直观示例；无原理性错误。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "是否涵盖 final 修饰变量、方法、类三种场景且语义解释正确",
+      "每类是否配有正确、可读的一行示例",
+      "表述是否准确（如方法不可被 override、类不可被 extend），无概念错误"
+    ]
+  }
+}

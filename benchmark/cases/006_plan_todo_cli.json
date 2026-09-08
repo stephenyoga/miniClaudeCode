@@ -1,0 +1,23 @@
+{
+  "id": "006_plan_todo_cli",
+  "title": "Plan：搭建 Java 待办命令行应用",
+  "dimension": "plan_execute",
+  "mode": "plan",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "sessions": [
+    {
+      "prompt": "请帮我搭建一个 Java 命令行待办事项应用，放到当前目录的 todo-app 子目录，包含三个文件：Task.java（待办模型，含 id/标题/完成状态与 getter）、TaskStore.java（用文本文件 todos.txt 做增删查持久化）、CliApp.java（main 循环，支持 add/list/done 三个命令，交互式输入）。最后编译验证能通过 javac。这是一个多文件协作任务，请制定清晰的执行计划并逐步完成。"
+    }
+  ],
+  "expectation": "Agent 先产出结构合理的 DAG 计划再执行；todo-app/ 下生成 Task.java、TaskStore.java、CliApp.java，三个文件职责清晰、互相配合（CliApp 调用 TaskStore 持久化到 todos.txt）；javac 编译通过；总结能说明实现了哪些命令。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "是否生成了合理的计划（拆解为可执行子任务）并真正执行，而非只给方案",
+      "todo-app/Task.java、TaskStore.java、CliApp.java 是否都创建且职责划分清晰",
+      "功能是否完整：add/list/done 逻辑存在，TaskStore 有文件持久化实现",
+      "是否尝试 javac 编译并让代码可编译通过"
+    ]
+  }
+}

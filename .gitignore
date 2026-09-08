@@ -40,5 +40,13 @@ memory_db/
 ### Test artifacts ###
 app/
 
+### Benchmark runtime artifacts ###
+benchmark/workspaces/
+benchmark/results/
+benchmark/.tmp/
+
+### Local docs ###
+模块实现总结.md
+
 ### Mac OS ###
 .DS_Store

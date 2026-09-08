@@ -1,0 +1,23 @@
+{
+  "id": "005_react_code_nav",
+  "title": "代码库导航：定位登录认证逻辑",
+  "dimension": "code_navigation",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "workspace": { "seedDir": "seed_login" },
+  "sessions": [
+    {
+      "prompt": "这是一个小型 Java 项目的源码。请阅读代码后回答：用户登录认证的核心逻辑放在哪个类、哪个方法里？从入口到完成密码校验的调用链大致是什么？请引用具体的文件名和方法名，不要泛泛而谈。"
+    }
+  ],
+  "expectation": "Agent 通过 read_file/list_dir 浏览 src/com/demo 下的文件，定位到 LoginService 类的 authenticate() 是认证核心，识别它调用 UserRepository.findByUsername() 查账号并比对 UserRepository.hash() 生成的密码摘要，能正确描述 Main 中是调用入口。回答引用真实符号名。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "是否正确定位登录认证核心类与入口方法（LoginService.authenticate，而非 User 实体）",
+      "调用链描述是否准确（authenticate → findByUsername → 比对 hash）",
+      "回答是否引用真实文件名与方法名、描述有细节，避免空泛"
+    ]
+  }
+}

@@ -57,6 +57,19 @@ src/main/java/com/claudecode/
 └── tool/           工具注册与执行
 ```
 
+## 评测（评测集）
+
+`benchmark/` 内含针对本项目能力的自动化评测集（12 个用例），覆盖 ReAct 编码、文件/Shell 工具、Plan-and-Execute、多 Agent(Team)、会话与跨会话记忆、RAG 语义检索。每个用例在隔离沙盒中真实运行 Agent，再由 LLM(judge) 按用例评分标准打分。
+
+```bash
+mvn -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt
+CP="target/classes;$(cat target/cp.txt)"
+java -Dfile.encoding=UTF-8 -cp "$CP" com.claudecode.eval.EvalRunner \
+     "$PWD/.env" "$PWD/benchmark"
+```
+
+运行结果写入 `benchmark/results/`（单例评分 + `report.md` 汇总）。详细字段与用法见 `benchmark/README.md`。驱动器源码位于 `src/main/java/com/claudecode/eval/`。RAG 用例依赖本地 Ollama embedding，不可用时自动 SKIP。
+
 ## 技术栈
 
 Java 25 · OkHttp · Jackson · SQLite · JavaParser · DeepSeek API

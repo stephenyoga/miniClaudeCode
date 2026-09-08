@@ -1,0 +1,24 @@
+{
+  "id": "011_rag_search",
+  "title": "RAG：用 search_code 回答认证代码位置",
+  "dimension": "rag_semantic",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek", "ollama"],
+  "workspace": { "seedDir": "seed_login" },
+  "preIndex": true,
+  "sessions": [
+    {
+      "prompt": "代码库已经用 /index 索引过了。请借助 search_code 工具（必要时再 read_file）回答：这个项目里与“登录认证”相关的代码主要集中在哪些类？authenticate 方法的校验逻辑具体做了什么？请结合检索到的内容回答。"
+    }
+  ],
+  "expectation": "Agent 会调用 search_code 做语义/关键词检索（检索“登录认证”命中 LoginService 等），并引用检索结果定位到 LoginService.authenticate 与 UserRepository；能描述 authenticate 的三步校验（查账号→比对密码哈希→返回角色/拒绝）；回答基于真实代码而非凭空编造。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "Agent 是否真的调用了 search_code 工具检索（而非只靠猜或纯 read 遍历）",
+      "定位是否准确：指出 LoginService（认证核心）与 UserRepository（账号查询）",
+      "对 authenticate 校验逻辑的描述是否正确（空值检查、按用户名查库、哈希比对后返回 OK:role 或 DENIED）"
+    ]
+  }
+}

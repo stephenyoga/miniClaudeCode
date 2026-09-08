@@ -1,0 +1,29 @@
+{
+  "id": "009_memory_cross_session",
+  "title": "跨会话长期记忆：存储事实后在下次会话召回",
+  "dimension": "memory_cross_session",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "saveFacts": true,
+  "sessions": [
+    {
+      "turns": [
+        "请记住：我叫 小明。",
+        "另外请记住：我更喜欢用 Git 命令行而不是图形化工具。"
+      ]
+    },
+    {
+      "prompt": "（这是一次全新的对话会话，上一个会话已经结束。）我之前应该让你记住过一些关于我的事——我是谁、以及我在 Git 使用上的偏好，你还记得吗？请告诉我。"
+    }
+  ],
+  "expectation": "会话 1 结束后触发长期记忆抽取并落盘（saveFacts）；会话 2 是重新 fork 的全新进程，MemoryManager 启动时从 memory_db/long_term_memory.json 加载长期记忆。会话 2 中 Agent 应通过记忆注入召回：名字=小明、偏好=Git 命令行。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "会话 2 是否成功召回用户名字（小明）",
+      "会话 2 是否成功召回 Git 偏好（命令行而非图形化工具）",
+      "召回内容是否准确、无臆造（若记错明显信息应扣分）"
+    ]
+  }
+}

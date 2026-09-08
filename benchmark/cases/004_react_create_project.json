@@ -1,0 +1,22 @@
+{
+  "id": "004_react_create_project",
+  "title": "用 create_project 创建 Vue 项目骨架",
+  "dimension": "tool_create_project",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "sessions": [
+    {
+      "prompt": "请使用 create_project 工具，在当前目录创建一个名为 pet-shop 的 Vue 项目（模板用 vue）。创建完成后，用 list_dir 递归查看并告诉我生成了哪些文件。"
+    }
+  ],
+  "expectation": "Agent 正确调用 create_project(name=pet-shop, template=vue)；工作区出现 pet-shop/package.json 与 pet-shop/src/App.vue，内容为 Vue 模板基本结构；最终答复说明生成的文件清单。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "是否调用了 create_project 并选择 vue 模板",
+      "pet-shop 目录下是否有 package.json（依赖含 vue）与 src/App.vue 等预期结构",
+      "最终答复是否清晰列出生成结果"
+    ]
+  }
+}

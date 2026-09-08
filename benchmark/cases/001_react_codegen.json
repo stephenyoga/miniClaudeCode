@@ -1,0 +1,23 @@
+{
+  "id": "001_react_codegen",
+  "title": "用 Java 实现线程安全 LRU 缓存并落盘",
+  "dimension": "react_codegen",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "sessions": [
+    {
+      "prompt": "请用 Java 实现一个线程安全的 LRU 缓存类 LruCache，支持 put(key,value) 与 get(key)，容量固定并在满时淘汰最久未使用的一项。把代码写入当前目录的 LruCache.java，并在 main 中写一个能演示出“最久未使用项被淘汰”的场景，然后用 javac 编译、java 运行，告诉我程序输出。"
+    }
+  ],
+  "expectation": "当前目录出现 LruCache.java；类具备 put/get、容量上限与 LRU 淘汰语义；用了 synchronized 或 Lock 保证线程安全；main 演示能直观体现某键因最久未使用被淘汰；javac/java 编译运行成功并输出演示结果。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "LruCache.java 是否存在且代码完整、逻辑正确：put/get 语义、容量约束、LRU 淘汰真正生效",
+      "是否具备线程安全措施（synchronized / Lock / ConcurrentHashMap 等）",
+      "main 演示场景是否清晰体现了 LRU 淘汰最久未使用项",
+      "是否通过 javac 编译并 java 运行，输出的行为与预期一致"
+    ]
+  }
+}

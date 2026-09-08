@@ -1,0 +1,22 @@
+{
+  "id": "010_team_collab",
+  "title": "Team 多 Agent：协作写一个小工具",
+  "dimension": "team_collab",
+  "mode": "team",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "sessions": [
+    {
+      "prompt": "请（团队协作方式）在当前目录创建 Sum3.java：程序遍历 1 到 100，把其中能被 3 整除的数累加求和，最后打印这个总和。请实际把文件写出来，编译运行它，并给出最终数值。"
+    }
+  ],
+  "expectation": "多 Agent 流程（Planner 拆解 → Worker 执行 → Reviewer 审查）能产出 Sum3.java；文件逻辑正确：累加 3、6、…、99，和为 1683；如能编译运行则输出 1683。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "是否产出 Sum3.java 且累加 1~100 内 3 的倍数逻辑正确",
+      "如报告了运行结果，数值是否等于 1683（若没运行而是直接给代码，按代码正确性判断）",
+      "最终答复是否清楚（分工或至少说明做了什么、结果如何）"
+    ]
+  }
+}
