@@ -1,0 +1,27 @@
+{
+  "id": "014_hard_feature",
+  "title": "Hard：报表新增按客户维度导出 CSV",
+  "dimension": "hard_repo_feature",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "workspace": { "seedDir": "seed_shop", "git": true },
+  "promptDoc": "在商城项目实现新功能：按客户维度导出 CSV 文件。",
+  "sessions": [
+    {
+      "prompt": "这是 seed_shop 商城项目。请先通读 ReportService、ReportController 与 util/CsvExporter，理解现状后实现下面的 Feature：\n\n【Issue #42】报表需要支持“按客户维度导出 CSV”\n现只有控制台文本版（ReportController.printCustomerRevenue）。请新增能力：把客户消费汇总导出为 CSV 文件 customer_report.csv（写在项目根目录），要求：\n1. 在 service 层提供导出逻辑（可复用 ReportService.customerRevenue 的降序结果，配合 util/CsvExporter 生成 CSV）；\n2. 表头为：客户,客户ID,消费(分)，每行一个客户，按消费额降序；\n3. 在控制器暴露对应方法，并让演示入口 App 在运行到报表阶段时真正调用并生成该文件；\n4. 编译运行后，文件 customer_report.csv 出现在仓库根目录，内容正确（c2 消费 161820、c1 消费 48800）。\n\n请尽量小地改动，不破坏既有收入/文本报表；完成后在最终答复中贴出 customer_report.csv 的实际内容与新增/改动文件清单。"
+    }
+  ],
+  "expectation": "改动集中且分层合理：ReportService 新增（或复用现方法+新增）导出 CSV 的能力，ReportController 暴露导出方法，App 在报表阶段调用并写文件。构建运行后根目录出现 customer_report.csv，内容为表头与两行数据，按降序：客户李四(c2) 161820、客户张三(c1) 48800。既有 printRevenue/printCustomerRevenue 行为不受影响。",
+  "judge": {
+    "maxScore": 100,
+    "difficulty": "hard",
+    "criteria": [
+      "功能是否真正闭环：customer_report.csv 是否生成且内容正确（表头+按降序两行，金额与种子场景一致）",
+      "分层是否合理：service 负责生成/导出，controller/App 负责触发，未把大量逻辑硬塞一处",
+      "是否复用现有 ReportService.customerRevenue 与 util/CsvExporter，无重复造轮子",
+      "改动范围：git diff 是否限于实现本功能所需文件，未破坏既有报表/收入行为",
+      "最终答复是否贴出真实文件内容与改动清单"
+    ]
+  }
+}

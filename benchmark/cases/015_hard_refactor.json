@@ -1,0 +1,27 @@
+{
+  "id": "015_hard_refactor",
+  "title": "Hard：定价方法重命名并同步全部调用方",
+  "dimension": "hard_repo_refactor",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "workspace": { "seedDir": "seed_shop", "git": true },
+  "promptDoc": "对跨包共用的定价方法做一次行为不变的改名重构。",
+  "sessions": [
+    {
+      "prompt": "这是 seed_shop 商城项目。PricingService.charge(Customer, long subtotalCents) 是“客户最终应付金额”，但它被多处当作普通过程调用、方法名含义模糊。请做一次行为不变的重构：\n\n【Issue #51】把 PricingService.charge 重命名为语义更清晰的 finalAmount\n1. 先全局搜索 charge 的所有定义与调用点（至少涉及 service 与 web 两层，注意 OrderService 与 OrderController 都用到了它）；\n2. 改名为 finalAmount 并同步更新全部调用点；\n3. 保持行为完全不变：VIP 仍打九折、普通客户原价；subtotal 逻辑不变；\n4. 编译运行 App 后，演示输出（含预览价 16020、收入合计、客户报表）应与重构前完全一致。\n\n用 git 确认改动只涉及必要的文件、且没有残留的 charge 引用。最终答复请说明改动的文件清单、如何确认无遗漏调用点、以及运行验证结果。"
+    }
+  ],
+  "expectation": "PricingService 的方法改名 finalAmount；OrderService 与 OrderController（及凡引用该方法的其它文件）同步更新，无遗漏、无残留对旧名的调用；除改名与调用点同步外不做多余重构；重新编译运行，VIP 折扣、预览价 16020、收入与客户报表输出与之前完全一致。",
+  "judge": {
+    "maxScore": 100,
+    "difficulty": "hard",
+    "criteria": [
+      "重命名是否彻底：PricingService.charge 定义与所有调用点都改为 finalAmount，无遗漏（编译通过是必要非充分条件）",
+      "是否行为不变：VIP 九折、预览价 16020、收入/报表输出与基线一致",
+      "是否额外引入与本任务无关的改动（如顺手改别的方法/加功能），有则应扣分",
+      "是否实际编译运行验证且通过",
+      "最终答复是否清晰说明改动范围与验证方式"
+    ]
+  }
+}

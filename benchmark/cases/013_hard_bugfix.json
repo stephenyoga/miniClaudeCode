@@ -1,0 +1,27 @@
+{
+  "id": "013_hard_bugfix",
+  "title": "Hard：修复取消订单后库存不归还的真实 Bug",
+  "dimension": "hard_repo_bugfix",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "workspace": { "seedDir": "seed_shop", "git": true },
+  "promptDoc": "在下单-取消流程中定位并修复库存未回补的 Bug，改动保持最小。",
+  "sessions": [
+    {
+      "prompt": "这是 seed_shop 商城项目的源码。请先运行构建与演示入口（Windows 用 build.cmd，否则 bash build.sh），观察输出中 'p5 库存' 一行的现象，再回答下面的 Issue：\n\n【Issue #37】取消订单后库存没有归还\n用户下单时会占用库存（InventoryService.reserve 扣减），但订单被取消后，下单时占用的那部分库存没有归还，导致可用库存越来越少。复现：运行演示后，第三单（c2 买 p5×2）被取消，预期 p5 库存从 8 回补到 10，实际仍为 8。\n\n请：1) 定位根因；2) 做最小修复，确保取消订单时把该单占用的库存逐项归还（注意：不能影响下单/回滚/已发货不可取消等既有行为）；3) 用 git 查看改动，不要修改与本次修复无关的文件；4) 重新编译运行验证 p5 库存输出为 10；5) 在最终答复里说明根因、改动文件与运行验证结果。"
+    }
+  ],
+  "expectation": "根因在 OrderService.cancelOrder：只把订单置为 CANCELLED 却没对 items 逐项调用 InventoryService.release 归还库存。修复应遍历 order.items() 调用 inventoryService.release(productId, qty)，可用库存恢复；除 OrderService 外不应有无关改动；重新构建运行后 p5 库存输出 10，其他输出（收入、客户报表、预览价）保持不变。",
+  "judge": {
+    "maxScore": 100,
+    "difficulty": "hard",
+    "criteria": [
+      "是否准确定位根因：cancelOrder 未归还库存（而非误改其它模块）",
+      "修复实现是否正确完整：遍历订单项调用库存回补，且不下单回滚/已发货逻辑，无重复归还或空指针隐患",
+      "改动范围是否最小：git diff 仅涉及必要的源文件，无与 issue 无关的修改",
+      "是否实际编译运行验证：p5 库存输出为 10，其余行为（收入/报表/折扣）未回归",
+      "最终答复是否讲清根因、改动与验证结果"
+    ]
+  }
+}

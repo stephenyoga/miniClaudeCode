@@ -1,6 +1,8 @@
 # Mini Claude Code 评测集
 
-针对本项目能力面的自动化评测集：ReAct 编码、文件/Shell 工具、Plan-and-Execute、多 Agent(Team)、会话与跨会话记忆、RAG 语义检索。每个用例在**隔离沙盒目录**中真实驱动 Agent 运行，再由 LLM(judge) 依据每用例的评分标准打分。
+针对本项目能力面的自动化评测集：ReAct 编码、文件/Shell 工具、Plan-and-Execute、多 Agent(Team)、会话与跨会话记忆、RAG 语义检索，以及**大仓库跨文件修改 + git diff 审查**的 hard 难例。每个用例在**隔离沙盒目录**中真实驱动 Agent 运行，再由 LLM(judge) 依据每用例的评分标准打分。
+
+用例分两层：`001~012` 为基线（小任务、快速回归）；`013~015` 为 hard 层（预置多模块仓库 `seed_shop`，测跨文件 bug 修复 / 新功能 / 行为不变重构，并用沙盒内 git baseline + diff 审查改动范围）。
 
 ## 目录结构
 
@@ -48,7 +50,10 @@ java -Dfile.encoding=UTF-8 -cp "$CP" com.claudecode.eval.EvalRunner \
   "mode": "react | plan | team",          // Agent 运行方式
   "enabled": true,
   "requires": ["deepseek"],               // 依赖声明；探测不到则 SKIP
+  "promptDoc": "任务一句话描述",           // 可选：进 judge 转录供其理解任务
   "workspace": { "seedDir": "seed_login" }, // 可选：assets 下预置目录，复制进沙盒
+                                            // 可选: "git": true → 沙盒先 git init+baseline，跑完采集 git diff 供 judge 审查改动范围
+  "difficulty": "hard",                   // 可选标记（easy/medium/hard），仅信息用
   "preIndex": true,                       // 可选：会话0前先 /index 沙盒（RAG 用例）
   "saveFacts": true,                      // 可选：本轮 run 后抽取事实存入长期记忆
   "sessions": [                           // 每项在独立 fork 的子进程执行（沙盒共享）

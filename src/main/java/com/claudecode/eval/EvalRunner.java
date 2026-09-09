@@ -80,12 +80,33 @@ public class EvalRunner {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
-            System.err.println("用法: EvalRunner <envFile> <benchmarkRoot> [id过滤前缀]");
+            System.err.println("用法: EvalRunner <envFile> <benchmarkRoot> [id过滤前缀 | merge-report]");
             System.exit(2);
         }
-        String filter = args.length > 2 ? args[2] : "";
-        EvalRunner runner = new EvalRunner(args[0], args[1], filter);
-        runner.runAll();
+        String mode = args.length > 2 ? args[2] : "";
+        EvalRunner runner = new EvalRunner(args[0], args[1], mode);
+        if ("merge-report".equals(mode)) {
+            runner.runReportMerge();
+        } else {
+            runner.runAll();
+        }
+    }
+
+    /** 只读模式：合并 results/ 下已有单例结果，重建 report.md（不跑任何用例与 LLM） */
+    private void runReportMerge() throws Exception {
+        rows.clear();
+        List<Path> files;
+        try (Stream<Path> s = Files.list(resultsDir)) {
+            files = s.filter(p -> p.getFileName().toString().endsWith(".json"))
+                    .sorted(Comparator.comparing(Path::toString)).toList();
+        }
+        for (Path f : files) {
+            ObjectNode row = (ObjectNode) mapper.readTree(Files.readString(f));
+            rows.add(row);
+        }
+        ran = (int) rows.stream().filter(r -> "scored".equals(r.path("status").asText())).count();
+        writeReport();
+        System.out.println("已合并 " + rows.size() + " 个单例结果 → " + resultsDir.resolve("report.md"));
     }
 
     private void runAll() throws Exception {
@@ -147,6 +168,12 @@ public class EvalRunner {
         String seedDir = caze.path("workspace").path("seedDir").asText("");
         if (!seedDir.isEmpty()) {
             copyRecursively(assetsDir.resolve(seedDir), sandbox);
+        }
+
+        // 可选：以 git baseline 方式初始化沙盒，便于 Agent 使用 git diff 并让 judge 审查改动范围
+        if (caze.path("workspace").path("git").asBoolean(false)) {
+            boolean ok = gitInitBaseline(sandbox);
+            if (!ok) row.put("gitWarn", "沙盒 git 初始化失败，跳过 diff 审查维度");
         }
 
         JsonNode sessions = caze.path("sessions");
@@ -292,6 +319,17 @@ public class EvalRunner {
                     if (!line.isBlank()) sb.append(line).append("\n");
                 }
             }
+            // git 改动（用于审查改动范围/是否引入无关修改）
+            JsonNode gitNode = tr.path("git");
+            if (gitNode.isObject()) {
+                sb.append("[git 改动]\n");
+                sb.append("status:\n").append(gitNode.path("status").asText()).append("\n");
+                sb.append("diff --stat:\n").append(gitNode.path("stat").asText()).append("\n");
+                String d = gitNode.path("diff").asText();
+                if (!d.isEmpty()) {
+                    sb.append("diff:\n").append(d.length() > 6000 ? d.substring(0, 6000) + "…[diff截断]" : d).append("\n");
+                }
+            }
             // 工作区产物
             JsonNode ws = tr.path("workspace");
             if (ws.isObject()) {
@@ -388,6 +426,39 @@ public class EvalRunner {
                 } catch (Exception ignored) {}
             }
             return null;
+        }
+    }
+
+    /** 在沙盒内执行 git init + baseline commit，返回是否成功 */
+    private boolean gitInitBaseline(Path sandbox) {
+        try {
+            String s = sandbox.toString();
+            execGit(null, s, "init", "-q");
+            execGit(null, s, "add", ".");
+            int exit = execGit(null, s, "-c", "user.name=eval", "-c", "user.email=eval@local",
+                    "commit", "-q", "-m", "baseline");
+            return exit == 0;
+        } catch (Exception e) {
+            System.err.println("git init 失败: " + e);
+            return false;
+        }
+    }
+
+    private int execGit(File cwd, String gitDir, String... args) {
+        List<String> cmd = new ArrayList<>();
+        cmd.add("git");
+        cmd.add("-C");
+        cmd.add(gitDir);
+        cmd.addAll(List.of(args));
+        try {
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            if (cwd != null) pb.directory(cwd);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            try (var in = p.getInputStream()) { in.readAllBytes(); }
+            return p.waitFor();
+        } catch (Exception e) {
+            return -1;
         }
     }
 

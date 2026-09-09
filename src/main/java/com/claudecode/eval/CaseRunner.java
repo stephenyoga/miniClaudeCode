@@ -130,6 +130,10 @@ public class CaseRunner {
             }
             result.put("status", "ok");
             result.set("workspace", snapshotWorkspace(Path.of(sandbox), sandbox));
+            // 沙盒以 git baseline 初始化时，采集 Agent 的改动用于 judge 审查改动范围
+            if (caze.path("workspace").path("git").asBoolean(false)) {
+                result.set("git", collectGit(sandbox));
+            }
 
             Files.createDirectories(Path.of(outJson).getParent());
             Files.writeString(Path.of(outJson), mapper.writerWithDefaultPrettyPrinter().writeValueAsString(result));
@@ -144,6 +148,38 @@ public class CaseRunner {
                 Files.writeString(Path.of(outJson), err.toPrettyString());
             } catch (Exception ignored) {}
             System.exit(1);
+        }
+    }
+
+    /** 采集沙盒 git 工作区状态：Agent 相对 baseline 的改动（未跟踪/修改/删除 + diff） */
+    private static ObjectNode collectGit(String sandbox) {
+        ObjectNode git = mapper.createObjectNode();
+        git.put("status", execGitIn(sandbox, "status", "--short"));
+        git.put("stat", execGitIn(sandbox, "diff", "--stat"));
+        git.put("diff", truncate(execGitIn(sandbox, "diff"), 14000));
+        return git;
+    }
+
+    private static String execGitIn(String sandbox, String... args) {
+        List<String> cmd = new ArrayList<>();
+        cmd.add("git");
+        cmd.add("-c");
+        cmd.add("core.quotepath=false");
+        cmd.add("-C");
+        cmd.add(sandbox);
+        cmd.addAll(List.of(args));
+        try {
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            String out;
+            try (var in = p.getInputStream()) {
+                out = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            p.waitFor();
+            return out == null ? "" : out.trim();
+        } catch (Exception e) {
+            return "<git 不可用: " + e.getMessage() + ">";
         }
     }
 

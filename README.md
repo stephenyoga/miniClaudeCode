@@ -59,7 +59,7 @@ src/main/java/com/claudecode/
 
 ## 评测（评测集）
 
-`benchmark/` 内含针对本项目能力的自动化评测集（12 个用例），覆盖 ReAct 编码、文件/Shell 工具、Plan-and-Execute、多 Agent(Team)、会话与跨会话记忆、RAG 语义检索。每个用例在隔离沙盒中真实运行 Agent，再由 LLM(judge) 按用例评分标准打分。
+`benchmark/` 内含针对本项目能力的自动化评测集（15 个用例，12 基线 + 3 个大仓库 hard），覆盖 ReAct 编码、文件/Shell 工具、Plan-and-Execute、多 Agent(Team)、会话与跨会话记忆、RAG 语义检索，以及"大仓库跨文件修改 + git diff 审查"的难例。每个用例在隔离沙盒中真实运行 Agent，再由 LLM(judge) 按用例评分标准打分。
 
 ```bash
 mvn -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt
