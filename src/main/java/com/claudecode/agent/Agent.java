@@ -144,7 +144,8 @@ public class Agent {
                 return result.toString();  // 返回最终结果，循环结束
             }
         }
-        return "达到最大迭代次数限制";
+        // 轮次耗尽：做一次无工具收尾总结，而不是直接返回占位文案
+        return finalizeSummary();
     }
 
     // ══════════════════════════════════════════════════
@@ -154,12 +155,13 @@ public class Agent {
     // ══════════════════════════════════════════════════
 
     public void runStream(String userInput) {
+        //用户输入->存入记忆系统->检索长期记忆
         mm.addUserMessage(userInput);
         injectMemoryToSystemPrompt(userInput);
         mm.storeMessage(LLMModels.Message.user(userInput));
 
         int iteration = 0;
-        while (iteration < MAX_ITERATIONS) {
+        while (iteration < MAX_ITERATIONS) {//最多10轮
             iteration++;
 
             // 流式回调：在收到 LLM 的每个 chunk 时实时显示
@@ -238,6 +240,8 @@ public class Agent {
                 return;
             }
         }
+        // 轮次耗尽：打印无工具收尾总结
+        System.out.println(finalizeSummary());
     }
 
     // ══════════════════════════════════════════════════
@@ -256,6 +260,28 @@ public class Agent {
         if (!memoryCtx.isEmpty()) {
             mm.updateSystemPrompt(originalSystemPrompt + memoryCtx);
         }
+    }
+
+    /**
+     * 工具轮次耗尽时的收尾总结。
+     * 追加一条"禁止再调用工具"的指令并做一次非流式调用，让 LLM 基于已完成的执行结果
+     * 产出根因 / 改动清单 / 验证结果，避免最终答复只剩一句迭代上限提示。
+     */
+    private String finalizeSummary() {
+        mm.storeMessage(LLMModels.Message.user(
+                "已达到工具调用轮次上限。不要再调用任何工具，立即基于上文已有的执行结果，"
+                        + "用简洁中文总结：1) 问题根因或需求要点；2) 改动清单（文件路径与关键改动）；"
+                        + "3) 验证结果（实际执行的命令与观察到的输出）。"));
+        try {
+            LLMModels.ChatResponse response = llmClient.chat(mm.getConversationContext(), null);
+            if (response != null && response.getContent() != null && !response.getContent().isBlank()) {
+                mm.addAssistantMessage(LLMModels.Message.assistant(response.getContent()));
+                return response.getContent() + "\n" + getTokenSummary();
+            }
+        } catch (Exception e) {
+            System.err.println("收尾总结失败: " + e.getMessage());
+        }
+        return "达到最大迭代次数限制";
     }
 
     // ══════════════════════════════════════════════════

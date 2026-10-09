@@ -61,12 +61,14 @@ public class MemoryRetriever {
      * @return 格式化的记忆文本，如 "\n【参考记忆】\n- [FACT] JDK 25\n"
      */
     public String buildContextForQuery(String query, int maxTokens) {
-        List<MemoryEntry> results = retrieve(query, 10);
-        if (results.isEmpty()) return "";
+        // 长期事实全量优先注入：跨会话事实数量少且重要，只靠关键词匹配会在换一种问法时整体漏召回
+        LinkedHashSet<MemoryEntry> merged = new LinkedHashSet<>(longTerm.getAll());
+        merged.addAll(retrieve(query, 10));
+        if (merged.isEmpty()) return "";
 
         StringBuilder ctx = new StringBuilder("\n【参考记忆】\n");
         int used = 0;
-        for (MemoryEntry e : results) {
+        for (MemoryEntry e : merged) {
             if (used + e.tokenCount() > maxTokens) break;
             ctx.append("- [").append(e.type()).append("] ").append(e.content()).append("\n");
             used += e.tokenCount();

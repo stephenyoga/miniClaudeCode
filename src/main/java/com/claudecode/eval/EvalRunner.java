@@ -14,6 +14,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -472,7 +473,7 @@ public class EvalRunner {
                     Files.createDirectories(target);
                 } else {
                     Files.createDirectories(target.getParent());
-                    Files.copy(p, target);
+                    Files.copy(p, target, StandardCopyOption.REPLACE_EXISTING);
                 }
             }
         }
@@ -482,9 +483,17 @@ public class EvalRunner {
         if (!Files.exists(dir)) return;
         try (Stream<Path> s = Files.walk(dir)) {
             for (Path p : s.sorted(Comparator.reverseOrder()).toList()) {
-                Files.deleteIfExists(p);
+                try {
+                    // git 在 Windows 上会把 .git 内的对象文件标记为只读，需先恢复可写再删
+                    if (!Files.isDirectory(p)) p.toFile().setWritable(true);
+                    Files.deleteIfExists(p);
+                } catch (Exception e) {
+                    System.err.println("⚠️ 清理失败: " + p + " -> " + e.getMessage());
+                }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            System.err.println("⚠️ 清理遍历失败 " + dir + ": " + e.getMessage());
+        }
     }
 
     // ── 报告 ────────────────────────────────────────────────────

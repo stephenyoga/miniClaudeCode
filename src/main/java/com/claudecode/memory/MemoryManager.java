@@ -83,13 +83,9 @@ public class MemoryManager {
         budget.recordUsage(inputTokens, outputTokens);
     }
 
-    /** 检索相关记忆并构建上下文文本（用于注入 system prompt） */
+    /** 检索相关记忆并构建上下文文本（用于注入 system prompt，标题由 retriever 统一添加） */
     public String buildContextForQuery(String query, int maxTokens) {
-        String ctx = retriever.buildContextForQuery(query, maxTokens);
-        if (!ctx.isEmpty()) {
-            ctx = "\n【相关记忆】" + ctx;
-        }
-        return ctx;
+        return retriever.buildContextForQuery(query, maxTokens);
     }
 
     /** 从短期记忆中提取事实并存入长期记忆（/clear 或 /save 时触发） */

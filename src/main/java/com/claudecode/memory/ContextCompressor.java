@@ -37,12 +37,17 @@ public class ContextCompressor {
 
     private static final String EXTRACT_FACTS_PROMPT = """
             从以下对话中提取关键事实，以 JSON 数组格式输出，每个元素包含 key 和 value。
-            只提取跨会话仍然成立的用户偏好、技术配置、版本选择、路径设定。
-            不要提取：临时对话内容、一次性任务描述、用户刚才要求做的事、项目里临时写的东西。
+            只提取跨会话仍然成立的用户偏好、技术配置、版本选择、路径设定、身份信息。
+            不要提取：临时对话内容、一次性任务描述、项目里临时写的东西。
+            例外：用户显式要求记住的信息（如"请记住""帮我记一下"）必须提取，不受上面限制。
+
+            value 写成含主语的完整陈述句，不要只写关键词 —— 关键词形式的记忆在换一种问法时会检索不到。
             如果不确定，输出 []。
 
             示例格式：
-            [{"key": "用户偏好", "value": "喜欢用 Java 21"}, {"key": "项目路径", "value": "D:/demo"}]
+            [{"key": "用户偏好", "value": "用户喜欢用 Java 21"},
+             {"key": "项目路径", "value": "用户的项目路径是 D:/demo"},
+             {"key": "用户姓名", "value": "用户的姓名是小明"}]
             """;
 
     // 三层输出过滤：
@@ -67,6 +72,7 @@ public class ContextCompressor {
             "模型", "配置", "环境变量", "默认",
             "JDK", "Java", "Python", "Go",
             "用户", "学历", "身份", "学校", "专业",
+            "姓名", "名字", "昵称",
             "框架"
     );
 
@@ -157,7 +163,8 @@ public class ContextCompressor {
      * 三层过滤全部通过才返回 true。
      */
     private boolean isPersistentFact(String key, String value) {
-        if (key == null || value == null || value.length() <= 3) return false;
+        // 阈值取 2：中文姓名/昵称常见 2 字，旧的 <=3 会把"小明"这类答案整个丢掉
+        if (key == null || value == null || value.length() < 2) return false;
         String lowerValue = value.toLowerCase(Locale.ROOT);
         String lowerKey = key.toLowerCase(Locale.ROOT);
 
