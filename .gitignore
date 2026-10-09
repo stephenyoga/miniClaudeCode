@@ -46,7 +46,7 @@ benchmark/results/
 benchmark/.tmp/
 
 ### Local docs ###
-模块实现总结.md
+MiniAgent CLI 项目实现文档.md
 
 ### Mac OS ###
 .DS_Store
