@@ -39,6 +39,8 @@ public class EvalRunner {
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final int CHILD_TIMEOUT_SECONDS = 480;
     private static final int JUDGE_TEXT_BUDGET = 24000;
+    /** 判定“通过”的分数阈值，用于通过率统计 */
+    private static final int PASS_THRESHOLD = 90;
 
     private final Path root;
     private final Path casesDir;
@@ -140,26 +142,24 @@ public class EvalRunner {
         System.out.println("\n========== 评测汇总 ==========");
         System.out.printf("用例: %d  完成: %d  跳过: %d  失败: %d%n", rows.size(), ran, skipped, failed);
         for (ObjectNode r : rows) {
-            System.out.printf("%-38s %s%n", r.path("caseId").asText(),
-                    r.path("status").asText() + (r.has("score") ? "  score=" + r.path("score").asText() + "/" + r.path("maxScore").asText() : ""));
+            String st = r.path("status").asText();
+            String detail = "scored".equals(st)
+                    ? String.format("  mean=%.1f  pass=%d/%d  scores=%s",
+                            r.path("mean").asDouble(), r.path("passCount").asInt(),
+                            r.path("repeats").asInt(), r.path("scores").toString())
+                    : "";
+            System.out.printf("%-44s %s%s%n", r.path("caseId").asText(), st, detail);
         }
     }
 
-    private ObjectNode evaluateCase(ObjectNode caze) throws Exception {
+    /** 单次执行一个用例：准备沙盒 → fork 会话 → judge 打分，返回单次结果 */
+    private ObjectNode evaluateOnce(ObjectNode caze) throws Exception {
         String id = caze.path("id").asText();
         ObjectNode row = mapper.createObjectNode();
         row.put("caseId", id);
         row.put("title", caze.path("title").asText(id));
         row.put("dimension", caze.path("dimension").asText());
         row.put("mode", caze.path("mode").asText());
-
-        if (!caze.path("enabled").asBoolean(true)) {
-            return skip(row, "enabled=false");
-        }
-        String skipReason = probeRequires(caze.path("requires"));
-        if (skipReason != null) {
-            return skip(row, skipReason);
-        }
 
         Path sandbox = workspacesDir.resolve(id);
         deleteRecursively(sandbox);
@@ -200,16 +200,89 @@ public class EvalRunner {
         }
 
         if (!childOk) {
-            failed++;
             row.put("status", "error");
             return row;
         }
-        ran++;
 
         String transcriptText = buildTranscriptText(caze, transcripts);
         row.put("transcriptChars", transcriptText.length());
         judge(caze, transcriptText, row);
         return row;
+    }
+
+    /**
+     * 执行一个用例（重复 repeats 次）并聚合结果。
+     * repeats>1 时输出每次得分、均值、标准差与通过率，把单次采样的波动量化出来。
+     */
+    private ObjectNode evaluateCase(ObjectNode caze) throws Exception {
+        String id = caze.path("id").asText();
+        ObjectNode probe = mapper.createObjectNode();
+        probe.put("caseId", id);
+        probe.put("title", caze.path("title").asText(id));
+        probe.put("dimension", caze.path("dimension").asText());
+        probe.put("mode", caze.path("mode").asText());
+
+        if (!caze.path("enabled").asBoolean(true)) {
+            return skip(probe, "enabled=false");
+        }
+        String skipReason = probeRequires(caze.path("requires"));
+        if (skipReason != null) {
+            return skip(probe, skipReason);
+        }
+
+        int repeats = Math.max(1, caze.path("repeats").asInt(1));
+        List<Integer> scores = new ArrayList<>();
+        List<String> overalls = new ArrayList<>();
+        int errorRuns = 0;
+        ObjectNode last = null;
+        for (int r = 0; r < repeats; r++) {
+            ObjectNode row = evaluateOnce(caze);
+            last = row;
+            if ("scored".equals(row.path("status").asText())) {
+                scores.add(row.path("score").asInt());
+                overalls.add(row.path("overall").asText(""));
+            } else {
+                errorRuns++;
+            }
+        }
+
+        ObjectNode agg = mapper.createObjectNode();
+        agg.put("caseId", id);
+        agg.put("title", caze.path("title").asText(id));
+        agg.put("dimension", caze.path("dimension").asText());
+        agg.put("mode", caze.path("mode").asText());
+        agg.put("repeats", repeats);
+        agg.put("errorRuns", errorRuns);
+        ArrayNode scoreArr = agg.putArray("scores");
+        for (int s : scores) scoreArr.add(s);
+
+        if (scores.isEmpty()) {
+            failed++;
+            agg.put("status", "error");
+            agg.put("error", last != null && last.has("error") ? last.path("error").asText() : "全部重复运行均失败");
+            return agg;
+        }
+
+        double mean = scores.stream().mapToInt(Integer::intValue).average().orElse(0);
+        double variance = scores.stream().mapToDouble(s -> (s - mean) * (s - mean)).average().orElse(0);
+        long pass = scores.stream().filter(s -> s >= PASS_THRESHOLD).count();
+
+        agg.put("status", "scored");
+        agg.put("score", (int) Math.round(mean));
+        agg.put("maxScore", last.path("maxScore").asInt(100));
+        agg.put("mean", round1(mean));
+        agg.put("stddev", round1(Math.sqrt(variance)));
+        agg.put("bestScore", scores.stream().mapToInt(Integer::intValue).max().orElse(0));
+        agg.put("worstScore", scores.stream().mapToInt(Integer::intValue).min().orElse(0));
+        agg.put("passCount", (int) pass);
+        agg.put("passRate", round1((double) pass / scores.size()));
+        agg.put("overall", overalls.isEmpty() ? "" : overalls.get(overalls.size() - 1));
+        ran++;
+        return agg;
+    }
+
+    private static double round1(double v) {
+        return Math.round(v * 10.0) / 10.0;
     }
 
     /** 把 classpath 里相对路径条目转成绝对（子进程 cwd 是沙盒，相对路径会失效） */
@@ -282,12 +355,22 @@ public class EvalRunner {
         pb.redirectErrorStream(true);
         pb.redirectOutput(logFile.toFile());
         Process p = pb.start();
-        boolean done = p.waitFor(CHILD_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        if (!done) {
-            p.destroyForcibly();
-            return -99;
+        try {
+            boolean done = p.waitFor(CHILD_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (!done) {
+                p.destroyForcibly();
+                return -99;
+            }
+            return p.exitValue();
+        } finally {
+            // 显式回收子进程句柄 + 短暂停顿：连续 fork 大量子 JVM 时 Windows 会因资源未及时回收
+            // 报 STATUS_DLL_INIT_FAILED (0xC0000142)，导致后续用例整批失败
+            p.destroy();
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException ignored) {
+            }
         }
-        return p.exitValue();
     }
 
     // ── transcript / judge ──────────────────────────────────────
@@ -501,31 +584,58 @@ public class EvalRunner {
         StringBuilder md = new StringBuilder();
         md.append("# Mini Claude Code 评测报告\n\n");
         md.append("生成时间: ").append(java.time.LocalDateTime.now()).append("\n\n");
-        md.append("| 用例 | 维度 | 状态 | 得分 | 说明 |\n");
-        md.append("|---|---|---|---|---|\n");
+
+        double sum = 0;
+        int scoredCount = 0;
+        long totalPass = 0, totalRuns = 0;
+        for (ObjectNode r : rows) {
+            if ("scored".equals(r.path("status").asText())) {
+                sum += r.path("mean").asDouble();
+                scoredCount++;
+                totalPass += r.path("passCount").asLong();
+                totalRuns += r.path("repeats").asLong();
+            }
+        }
+        if (scoredCount > 0) {
+            md.append("- 用例数: ").append(scoredCount)
+                    .append(" | 平均分: ").append(round1(sum / scoredCount))
+                    .append(" | 整体通过率(≥").append(PASS_THRESHOLD).append("): ")
+                    .append(totalPass).append("/").append(totalRuns)
+                    .append("\n\n");
+        }
+
+        md.append("| 用例 | 维度 | 状态 | 通过率 | 均值 | 标准差 | 说明 |\n");
+        md.append("|---|---|---|---|---|---|---|\n");
         for (ObjectNode r : rows) {
             String status = r.path("status").asText();
-            String scoreCell;
+            String passCell = "-", meanCell = "-", sdCell = "-";
             String note;
             if ("scored".equals(status)) {
-                scoreCell = r.path("score").asText() + "/" + r.path("maxScore").asText();
-                note = r.path("overall").asText().replace("\n", " ").length() > 120
-                        ? r.path("overall").asText().replace("\n", " ").substring(0, 120) + "…"
-                        : r.path("overall").asText().replace("\n", " ");
+                passCell = r.path("passCount").asText() + "/" + r.path("repeats").asText();
+                meanCell = r.path("mean").asText();
+                sdCell = r.path("stddev").asText();
+                note = summarizeRun(r);
             } else if ("skipped".equals(status)) {
-                scoreCell = "-";
                 note = "跳过: " + r.path("skipReason").asText();
             } else {
-                scoreCell = "-";
                 note = "失败/错误: " + r.path("error").asText("");
             }
             md.append("| ").append(r.path("caseId").asText())
                     .append(" | ").append(r.path("dimension").asText())
                     .append(" | ").append(status)
-                    .append(" | ").append(scoreCell)
+                    .append(" | ").append(passCell)
+                    .append(" | ").append(meanCell)
+                    .append(" | ").append(sdCell)
                     .append(" | ").append(note).append(" |\n");
         }
         Files.writeString(resultsDir.resolve("report.md"), md.toString());
         System.out.println("📄 报告已写入: " + resultsDir.resolve("report.md"));
+    }
+
+    /** 报告说明列：各次得分 + 最后一次评语（截断，并转义表格竖线） */
+    private String summarizeRun(ObjectNode r) {
+        String overall = r.path("overall").asText("").replace("\n", " ");
+        String body = overall.length() > 110 ? overall.substring(0, 110) + "…" : overall;
+        return ("得分 " + r.path("scores").toString() + "；" + body).replace("|", "/");
     }
 }
