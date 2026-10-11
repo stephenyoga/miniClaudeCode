@@ -59,16 +59,30 @@ src/main/java/com/claudecode/
 
 ## 评测（评测集）
 
-`benchmark/` 内含针对本项目能力的自动化评测集（15 个用例，12 基线 + 3 个大仓库 hard），覆盖 ReAct 编码、文件/Shell 工具、Plan-and-Execute、多 Agent(Team)、会话与跨会话记忆、RAG 语义检索，以及"大仓库跨文件修改 + git diff 审查"的难例。每个用例在隔离沙盒中真实运行 Agent，再由 LLM(judge) 按用例评分标准打分。
+`benchmark/` 内含针对本项目能力的自动化评测集（**31 个用例**），分四类覆盖：
+
+- **基线能力**（001–015）：ReAct 编码/修复、文件与 Shell 工具、Plan-and-Execute、多 Agent(Team)、会话与跨会话记忆、RAG 语义检索，以及大仓库跨文件修改 + `git diff` 审查的难例
+- **记忆家族**（016–020）：同键覆盖、工具结果边界、抗干扰召回、显式记忆、一次性请求过滤
+- **负样本与安全**（021–029）：信息不足应拒改、幻觉陷阱、破坏性命令、路径越界、命令注入、SQL 注入、硬编码密钥、提示词注入
+- **规划健壮性**（027/030）：Reviewer 前提核验、循环依赖识别
+
+每个用例在隔离沙盒中真实运行 Agent，由 LLM(judge) 按 rubric 打分；支持**重复执行**（基线 3 次 / hard 2 次）并汇总 **通过率 / 均值 / 标准差**，把单次采样的波动量化出来。
 
 ```bash
 mvn -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt
 CP="target/classes;$(cat target/cp.txt)"
-java -Dfile.encoding=UTF-8 -cp "$CP" com.claudecode.eval.EvalRunner \
-     "$PWD/.env" "$PWD/benchmark"
+
+# 全量评测
+java -Dfile.encoding=UTF-8 -cp "$CP" com.claudecode.eval.EvalRunner "$PWD/.env" "$PWD/benchmark"
+
+# 只跑子集（按 id 前缀，逗号分隔）
+java -Dfile.encoding=UTF-8 -cp "$CP" com.claudecode.eval.EvalRunner "$PWD/.env" "$PWD/benchmark" "019,023,027"
+
+# 只合并已有结果、重建报告（不跑用例）
+java -Dfile.encoding=UTF-8 -cp "$CP" com.claudecode.eval.EvalRunner "$PWD/.env" "$PWD/benchmark" merge-report
 ```
 
-运行结果写入 `benchmark/results/`（单例评分 + `report.md` 汇总）。详细字段与用法见 `benchmark/README.md`。驱动器源码位于 `src/main/java/com/claudecode/eval/`。RAG 用例依赖本地 Ollama embedding，不可用时自动 SKIP。
+当前成绩：31 条平均 **87.1 / 100**，整体通过率 **70/87**。结果写入 `benchmark/results/`（`<id>.json` 聚合 + `report.md` 汇总）。详细字段与用法见 `benchmark/README.md`。驱动器源码位于 `src/main/java/com/claudecode/eval/`。RAG 用例依赖本地 Ollama embedding，不可用时自动 SKIP。
 
 ## 技术栈
 
