@@ -257,9 +257,14 @@ public class AgentOrchestrator {
             issues = parseReviewIssues(retryReview.content());
         }
 
-        updateStep(steps, step.id(), step.withResult(acceptedResult));
-        out.println(approved ? "✅ [" + step.id() + "] 重试后审查通过\n"
-                : "⚠️ [" + step.id() + "] 超过最大重试次数，保留当前结果\n");
+        // 审查仍未通过时标记为失败（而非完成），避免下游步骤继续执行、最终误报“任务完成”
+        if (approved) {
+            updateStep(steps, step.id(), step.withResult(acceptedResult));
+            out.println("✅ [" + step.id() + "] 重试后审查通过\n");
+        } else {
+            updateStep(steps, step.id(), step.withFailed(acceptedResult));
+            out.println("⚠️ [" + step.id() + "] 超过最大重试次数，审查未通过，标记为失败\n");
+        }
     }
 
     /** 并行执行一批独立步骤 */
@@ -315,16 +320,24 @@ public class AgentOrchestrator {
         if (content == null || content.isBlank()) return false;
         try {
             String cleaned = content.replaceAll("```json\\s*", "").replaceAll("```\\s*", "").trim();
+            // 容忍前后包裹的说明文字：截取首个 { 到末个 }
+            int s = cleaned.indexOf('{'), e = cleaned.lastIndexOf('}');
+            if (s >= 0 && e > s) cleaned = cleaned.substring(s, e + 1);
             JsonNode root = mapper.readTree(cleaned);
             JsonNode approved = root.path("approved");
-            return !approved.isMissingNode() && approved.asBoolean(false);
-        } catch (Exception e) {
-            String lower = content.toLowerCase();
-            boolean hasPositive = lower.contains("\"approved\": true") || lower.contains("通过") || lower.contains("合格");
-            boolean hasNegative = lower.contains("\"approved\": false") || lower.contains("不通过") || lower.contains("不合格");
-            if (hasNegative && !hasPositive) return false;
-            return hasPositive;
+            if (!approved.isMissingNode()) return approved.asBoolean(false);
+        } catch (Exception ignored) {
+            // 落到下方关键词兜底
         }
+        String lower = content.toLowerCase();
+        // 否定信号优先：注意"未通过"包含子串"通过"，必须先判否定再判肯定
+        boolean hasNegative = lower.contains("approved\": false") || lower.contains("\"approved\":false")
+                || lower.contains("不通过") || lower.contains("未通过") || lower.contains("拒绝")
+                || lower.contains("不合格") || lower.contains("不满足") || lower.contains("未满足");
+        boolean hasPositive = lower.contains("approved\": true") || lower.contains("\"approved\":true")
+                || lower.contains("已通过") || lower.contains("审查通过") || lower.contains("合格");
+        if (hasNegative) return false;
+        return hasPositive;
     }
 
     private String parseReviewIssues(String content) {
@@ -373,12 +386,16 @@ public class AgentOrchestrator {
         boolean hasFailed = steps.stream().anyMatch(s -> s.status() == StepStatus.FAILED);
         StringBuilder sb = new StringBuilder();
         if (allDone) sb.append("✅ 多 Agent 协作任务完成！\n");
-        else if (hasFailed) sb.append("⚠️ 存在失败步骤，计划未完全完成\n");
+        else if (hasFailed) sb.append("❌ 任务未能完成：以下步骤失败或被审查拒绝\n");
         else sb.append("⚠️ 部分完成，存在未执行步骤\n");
 
         for (ExecutionStep s : steps) {
             String icon = s.status() == StepStatus.COMPLETED ? "✅" : s.status() == StepStatus.FAILED ? "❌" : "⏳";
             sb.append("  ").append(icon).append(" [").append(s.id()).append("] ").append(s.description()).append("\n");
+            if (s.status() == StepStatus.FAILED && s.result() != null && !s.result().isBlank()) {
+                String preview = s.result().length() > 300 ? s.result().substring(0, 300) + "..." : s.result();
+                sb.append("     失败原因：").append(preview.replace("\n", " ")).append("\n");
+            }
         }
         return sb.toString();
     }
