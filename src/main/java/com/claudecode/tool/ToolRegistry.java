@@ -58,6 +58,43 @@ public class ToolRegistry {
         projectPath = path;
     }
 
+    /** 工具允许访问的根目录（进程启动时的工作目录；评测沙盒下即为沙盒目录），用于阻止路径越界 */
+    private static final Path WORKSPACE_ROOT =
+            Path.of(System.getProperty("user.dir", ".")).toAbsolutePath().normalize();
+
+    /** 破坏性命令特征：命中任一项即拒绝执行，避免不可逆的数据丢失 */
+    private static final List<String> DESTRUCTIVE_PATTERNS = List.of(
+            "rm -rf", "rm -fr", "del /s", "del /f /s", "rd /s", "rmdir /s",
+            "format ", "mkfs", "dd if=", "shutdown", "> /dev/sd", ":(){", "chmod -r 777 /"
+    );
+
+    /**
+     * 校验目标路径是否落在工作区根目录内。
+     * @return null 表示允许；否则返回拒绝原因
+     */
+    private static String rejectIfOutsideWorkspace(String path) {
+        if (path == null || path.isBlank()) return "路径不能为空";
+        try {
+            Path resolved = WORKSPACE_ROOT.resolve(path).normalize().toAbsolutePath();
+            if (!resolved.startsWith(WORKSPACE_ROOT)) {
+                return "拒绝访问：路径超出当前工作区范围（" + path + "）。如确需访问工作区外的文件，请先与用户确认。";
+            }
+        } catch (Exception e) {
+            return "路径不合法：" + path;
+        }
+        return null;
+    }
+
+    /** 检测命令中是否含破坏性操作特征，返回命中的特征词（无则 null） */
+    private static String detectDestructive(String command) {
+        if (command == null) return null;
+        String lower = command.toLowerCase();
+        for (String p : DESTRUCTIVE_PATTERNS) {
+            if (lower.contains(p)) return p;
+        }
+        return null;
+    }
+
     /**
      * 注册文件操作工具
      */
@@ -69,6 +106,8 @@ public class ToolRegistry {
                 createParameters(new Param("path", "string", "文件路径", true)),
                 args -> {
                     String path = args.get("path");
+                    String denied = rejectIfOutsideWorkspace(path);
+                    if (denied != null) return denied;
                     try {
                         String content = Files.readString(Path.of(path));
                         return "文件内容:\n" + content;
@@ -89,6 +128,8 @@ public class ToolRegistry {
                 args -> {
                     String path = args.get("path");
                     String content = args.get("content");
+                    String denied = rejectIfOutsideWorkspace(path);
+                    if (denied != null) return denied;
                     try {
                         Files.writeString(Path.of(path), content);
                         return "文件已写入: " + path;
@@ -109,6 +150,8 @@ public class ToolRegistry {
                 args -> {
                     String path = args.get("path");
                     String content = args.get("content");
+                    String denied = rejectIfOutsideWorkspace(path);
+                    if (denied != null) return denied;
                     try {
                         Files.writeString(Path.of(path), content,
                                 java.nio.file.StandardOpenOption.APPEND,
@@ -130,6 +173,8 @@ public class ToolRegistry {
                 ),
                 args -> {
                     String path = args.getOrDefault("path", ".");
+                    String denied = rejectIfOutsideWorkspace(path);
+                    if (denied != null) return denied;
                     boolean recursive = Boolean.parseBoolean(args.getOrDefault("recursive", "false"));
                     try {
                         StringBuilder output = new StringBuilder();
@@ -173,6 +218,11 @@ public class ToolRegistry {
                 args -> {
                     String command = args.get("command");
                     String cwd = args.get("cwd");
+                    String destructive = detectDestructive(command);
+                    if (destructive != null) {
+                        return "已拒绝执行：命令包含破坏性操作特征（" + destructive + "）。这类操作不可逆，"
+                                + "可能造成数据丢失。请先向用户说明影响范围并取得确认，或改用更安全的方式。";
+                    }
                     try {
                         ProcessBuilder pb = new ProcessBuilder();
 

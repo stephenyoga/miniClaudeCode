@@ -12,6 +12,7 @@ import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 子代理 —— 可复用的轻量 Agent，用于 Multi-Agent 协作。
@@ -66,7 +67,7 @@ public class SubAgent {
             iteration++;
 
             try {
-                // 只有 WORKER 传递工具定义，PLANNER 和 REVIEWER 不做工具调用
+                // WORKER 传全部工具；REVIEWER 传只读工具用于核验；PLANNER 不传工具
                 LLMModels.ChatResponse response = llmClient.chat(
                         conversation, shouldUseTools() ? toolDefinitions() : null);
 
@@ -119,8 +120,14 @@ public class SubAgent {
         conversation.add(sys);
     }
 
-    /** 只有 WORKER 可以调工具，PLANNER 和 REVIEWER 只输出文本 */
-    private boolean shouldUseTools() { return role == MultiAgentRole.WORKER; }
+    /** REVIEWER 仅允许只读工具，用于独立核验执行结果（不给写权限） */
+    private static final Set<String> REVIEWER_READONLY_TOOLS =
+            Set.of("read_file", "list_dir", "search_code");
+
+    /** WORKER 可用全部工具；REVIEWER 用只读工具核验代码；PLANNER 不调工具 */
+    private boolean shouldUseTools() {
+        return role == MultiAgentRole.WORKER || role == MultiAgentRole.REVIEWER;
+    }
 
     public String getName() { return name; }
     public MultiAgentRole getRole() { return role; }
@@ -136,6 +143,7 @@ public class SubAgent {
 
     private List<LLMModels.Tool> toolDefinitions() {
         return toolRegistry.getAllTools().stream()
+                .filter(t -> role != MultiAgentRole.REVIEWER || REVIEWER_READONLY_TOOLS.contains(t.name()))
                 .map(t -> new LLMModels.Tool(t.name(), t.description(), t.parameters()))
                 .toList();
     }
