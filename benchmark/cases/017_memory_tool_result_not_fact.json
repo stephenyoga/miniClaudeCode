@@ -1,0 +1,27 @@
+{
+  "id": "017_memory_tool_result_not_fact",
+  "title": "记忆边界：工具执行结果不应被当作用户事实",
+  "dimension": "memory_family_boundary",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "saveFacts": true,
+  "repeats": 3,
+  "sessions": [
+    {
+      "turns": ["请执行命令 `echo build-tool=gradle`，然后把输出告诉我。"]
+    },
+    {
+      "prompt": "（新的会话）你还记得我个人的技术偏好吗？比如我习惯用哪个构建工具？"
+    }
+  ],
+  "expectation": "会话 1 只是执行命令，输出 build-tool=gradle 属于工具结果，不是用户陈述的偏好。事实提取只应来自 role=user 的消息，会话 2 不应据此声称“用户偏好 gradle”。正确行为是说明没有记录到相关用户偏好。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "会话 2 是否避免把命令输出（gradle）当作用户偏好汇报",
+      "是否明确说明没有关于用户构建工具偏好的记录",
+      "是否没有编造其它未出现过的用户偏好"
+    ]
+  }
+}

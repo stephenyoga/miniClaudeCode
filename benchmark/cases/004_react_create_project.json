@@ -18,5 +18,6 @@
       "pet-shop 目录下是否有 package.json（依赖含 vue）与 src/App.vue 等预期结构",
       "最终答复是否清晰列出生成结果"
     ]
-  }
+  },
+  "repeats": 3
 }

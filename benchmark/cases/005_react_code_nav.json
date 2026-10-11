@@ -5,7 +5,9 @@
   "mode": "react",
   "enabled": true,
   "requires": ["deepseek"],
-  "workspace": { "seedDir": "seed_login" },
+  "workspace": {
+    "seedDir": "seed_login"
+  },
   "sessions": [
     {
       "prompt": "这是一个小型 Java 项目的源码。请阅读代码后回答：用户登录认证的核心逻辑放在哪个类、哪个方法里？从入口到完成密码校验的调用链大致是什么？请引用具体的文件名和方法名，不要泛泛而谈。"
@@ -19,5 +21,6 @@
       "调用链描述是否准确（authenticate → findByUsername → 比对 hash）",
       "回答是否引用真实文件名与方法名、描述有细节，避免空泛"
     ]
-  }
+  },
+  "repeats": 3
 }

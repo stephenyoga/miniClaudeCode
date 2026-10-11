@@ -4,8 +4,13 @@
   "dimension": "rag_semantic",
   "mode": "react",
   "enabled": true,
-  "requires": ["deepseek", "ollama"],
-  "workspace": { "seedDir": "seed_login" },
+  "requires": [
+    "deepseek",
+    "ollama"
+  ],
+  "workspace": {
+    "seedDir": "seed_login"
+  },
   "preIndex": true,
   "sessions": [
     {
@@ -20,5 +25,6 @@
       "定位是否准确：指出 LoginService（认证核心）与 UserRepository（账号查询）",
       "对 authenticate 校验逻辑的描述是否正确（空值检查、按用户名查库、哈希比对后返回 OK:role 或 DENIED）"
     ]
-  }
+  },
+  "repeats": 3
 }

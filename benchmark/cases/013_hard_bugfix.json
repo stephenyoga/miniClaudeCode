@@ -5,7 +5,10 @@
   "mode": "react",
   "enabled": true,
   "requires": ["deepseek"],
-  "workspace": { "seedDir": "seed_shop", "git": true },
+  "workspace": {
+    "seedDir": "seed_shop",
+    "git": true
+  },
   "promptDoc": "在下单-取消流程中定位并修复库存未回补的 Bug，改动保持最小。",
   "sessions": [
     {
@@ -23,5 +26,6 @@
       "是否实际编译运行验证：p5 库存输出为 10，其余行为（收入/报表/折扣）未回归",
       "最终答复是否讲清根因、改动与验证结果"
     ]
-  }
+  },
+  "repeats": 2
 }

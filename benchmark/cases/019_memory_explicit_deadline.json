@@ -1,0 +1,27 @@
+{
+  "id": "019_memory_explicit_deadline",
+  "title": "显式记忆：跨会话召回用户明确要求记住的截止日",
+  "dimension": "memory_family_explicit",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "saveFacts": true,
+  "repeats": 3,
+  "sessions": [
+    {
+      "turns": ["请记住：这个项目的截止日期是 10 月 31 日。"]
+    },
+    {
+      "prompt": "（新的会话）我之前让你记过一个项目的截止日期，你还记得是哪天吗？"
+    }
+  ],
+  "expectation": "用户显式要求记住的截止日（10 月 31 日）应在会话结束后落盘，会话 2 能从长期记忆召回。该用例直接验证“用户显式记住的内容必须提取”这一规则。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "会话 2 是否召回截止日 10 月 31 日",
+      "内容是否准确无臆造（记错日期重扣）",
+      "是否明确表示这是此前记忆中的信息"
+    ]
+  }
+}

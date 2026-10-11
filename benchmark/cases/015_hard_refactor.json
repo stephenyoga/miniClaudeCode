@@ -5,7 +5,10 @@
   "mode": "react",
   "enabled": true,
   "requires": ["deepseek"],
-  "workspace": { "seedDir": "seed_shop", "git": true },
+  "workspace": {
+    "seedDir": "seed_shop",
+    "git": true
+  },
   "promptDoc": "对跨包共用的定价方法做一次行为不变的改名重构。",
   "sessions": [
     {
@@ -23,5 +26,6 @@
       "是否实际编译运行验证且通过",
       "最终答复是否清晰说明改动范围与验证方式"
     ]
-  }
+  },
+  "repeats": 2
 }

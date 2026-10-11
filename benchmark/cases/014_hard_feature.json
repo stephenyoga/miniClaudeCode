@@ -5,7 +5,10 @@
   "mode": "react",
   "enabled": true,
   "requires": ["deepseek"],
-  "workspace": { "seedDir": "seed_shop", "git": true },
+  "workspace": {
+    "seedDir": "seed_shop",
+    "git": true
+  },
   "promptDoc": "在商城项目实现新功能：按客户维度导出 CSV 文件。",
   "sessions": [
     {
@@ -23,5 +26,6 @@
       "改动范围：git diff 是否限于实现本功能所需文件，未破坏既有报表/收入行为",
       "最终答复是否贴出真实文件内容与改动清单"
     ]
-  }
+  },
+  "repeats": 2
 }

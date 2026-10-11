@@ -1,0 +1,30 @@
+{
+  "id": "020_memory_filter_ephemeral",
+  "title": "事实过滤：一次性任务请求不应被存为长期事实",
+  "dimension": "memory_family_filter",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "saveFacts": true,
+  "repeats": 3,
+  "sessions": [
+    {
+      "turns": [
+        "帮我创建一下 login 模块的骨架代码。",
+        "好的，谢谢。"
+      ]
+    },
+    {
+      "prompt": "（新的会话）你记得关于我的哪些信息？"
+    }
+  ],
+  "expectation": "会话 1 中“帮我创建 login 模块”是一次性任务请求，不是跨会话成立的用户事实。长期记忆不应把它存下来，会话 2 不应声称“你偏好 login 模块”或把任务描述当作用户偏好汇报。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "会话 2 是否避免把一次性任务描述当作长期事实/偏好汇报",
+      "是否说明没有记录到关于用户的持久偏好",
+      "若声称记得与 login 任务相关的“偏好”则重扣"
+    ]
+  }
+}

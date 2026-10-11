@@ -19,5 +19,6 @@
       "功能是否完整：add/list/done 逻辑存在，TaskStore 有文件持久化实现",
       "是否尝试 javac 编译并让代码可编译通过"
     ]
-  }
+  },
+  "repeats": 3
 }

@@ -1,0 +1,30 @@
+{
+  "id": "016_memory_same_key_update",
+  "title": "记忆更新：同键事实应覆盖而非并存",
+  "dimension": "memory_family_update",
+  "mode": "react",
+  "enabled": true,
+  "requires": ["deepseek"],
+  "saveFacts": true,
+  "repeats": 3,
+  "sessions": [
+    {
+      "turns": [
+        "请记住：我平时主要用 Java 21 写代码。",
+        "更正一下，我现在已经切换到 Java 17 了，以后以这个为准。"
+      ]
+    },
+    {
+      "prompt": "（新的会话）我之前跟你说过我用哪个 Java 版本，你还记得吗？请只告诉我当前的版本。"
+    }
+  ],
+  "expectation": "两条用户消息先后给出相反偏好（Java 21 → Java 17）。事实抽取后长期记忆应以最新为准：会话 2 召回 Java 17。若并列给出 21 与 17、或只召回 21，说明覆盖/去重语义失效。",
+  "judge": {
+    "maxScore": 100,
+    "criteria": [
+      "会话 2 是否召回最新值 Java 17",
+      "是否避免把旧值 Java 21 当作当前偏好并列给出",
+      "若提及曾用 21，是否明确说明 17 才是最新（可接受，不扣分）"
+    ]
+  }
+}
